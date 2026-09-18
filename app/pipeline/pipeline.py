@@ -17,13 +17,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.config import settings
 from app.pipeline import compare as compare_stage
 from app.pipeline import escalate as escalate_stage
 from app.pipeline.classify import classify_email
 from app.pipeline.extract import UnreadableDocument, extract_fields, read_document
 from app.pipeline.models import (
+    COMPARISON_FIELDS,
     Category,
     EmailReport,
     EmailResult,
@@ -32,20 +35,128 @@ from app.pipeline.models import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-DEFAULT_SOURCE = REPO_ROOT / "data"
 
 
-def _read(source: Path, attachment: str) -> tuple[str | None, dict[str, str]]:
-    """Read one attachment. Returns (text, fields); text is None if the
-    document could not be read at all."""
+def _default_source() -> Path:
+    """Where the dataset bundle lives.
+
+    Honours DATASET_SOURCE from the environment (.env locally, a Cloud Run
+    env var in the container) so the image can point at a mounted volume
+    without a code change; relative values resolve against the repo root.
+    """
+    configured = settings.dataset_source or "data"
+    path = Path(configured)
+    return path if path.is_absolute() else REPO_ROOT / configured
+
+
+DEFAULT_SOURCE = _default_source()
+
+
+@dataclass
+class ProcessedEmail:
+    """One email's full pipeline output.
+
+    `report` is the submission-shaped verdict plus per-field evidence.
+    The excerpts are raw document text for the UI to show alongside it;
+    they live here rather than on EmailReport because that model defines
+    the submission contract and is deliberately left untouched.
+    """
+
+    report: EmailReport
+    si_excerpt: str = ""
+    bl_excerpt: str = ""
+
+    @property
+    def result(self) -> EmailResult:
+        return self.report.result
+
+
+EVIDENCE_LINES = 8
+
+
+def _read(source: Path, attachment: str) -> tuple[str | None, dict[str, str], str]:
+    """Read one attachment.
+
+    Returns (text, fields, error). text is None and error is populated if
+    the document could not be read at all.
+    """
     try:
         text = read_document(Path(source) / attachment)
-    except UnreadableDocument:
-        return None, {}
-    return text, extract_fields(text)
+    except UnreadableDocument as exc:
+        return None, {}, str(exc)
+    return text, extract_fields(text), ""
 
 
-def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> EmailReport:
+def _excerpt(text: str | None, lines: int = EVIDENCE_LINES) -> str:
+    """The first few non-empty lines of a document, for display."""
+    if not text:
+        return ""
+    kept = [line.strip() for line in text.splitlines() if line.strip()]
+    return "\n".join(kept[:lines])
+
+
+def _build_evidence(
+    reason: ReviewReason | None,
+    defects: list[str],
+    attachments: list[str],
+    bl_text: str | None,
+    si_error: str,
+    bl_error: str,
+    si_fields: dict[str, str],
+    bl_fields: dict[str, str],
+) -> str:
+    """A short, human-readable justification for the verdict.
+
+    The review queue is meant to save a human time, so each entry has to say
+    what is wrong and show the bit of the document that proves it.
+    """
+    if reason is ReviewReason.MISSING_ATTACHMENT:
+        if not attachments:
+            return "The email asks for a comparison but carries no attachments."
+        names = ", ".join(Path(a).name for a in attachments)
+        return f"Only one document was attached ({names}); no draft BL to compare against."
+
+    if reason is ReviewReason.UNREADABLE:
+        detail = si_error or bl_error
+        if detail:
+            return f"Document could not be read: {detail}"
+        return "Document could not be read."
+
+    if reason is ReviewReason.WRONG_DOC_TYPE:
+        header = _excerpt(bl_text, 4)
+        return (
+            "The second attachment is not a Bill of Lading. Its header reads:\n"
+            f"{header}"
+        )
+
+    if reason is ReviewReason.MISSING_VALUE:
+        blank_si = [f for f in COMPARISON_FIELDS if si_fields.get(f) == ""]
+        blank_bl = [f for f in COMPARISON_FIELDS if bl_fields.get(f) == ""]
+        parts = []
+        if blank_si:
+            parts.append(f"left blank in the SI: {', '.join(blank_si)}")
+        if blank_bl:
+            parts.append(f"left blank in the BL: {', '.join(blank_bl)}")
+        if not parts:
+            unstated = [
+                f
+                for f in COMPARISON_FIELDS
+                if not si_fields.get(f) or not bl_fields.get(f)
+            ]
+            parts.append(f"not stated in one of the documents: {', '.join(unstated)}")
+        return "Cannot compare — " + "; ".join(parts) + "."
+
+    if defects:
+        rows = [
+            f"{field}: SI has {si_fields.get(field)!r}, BL has {bl_fields.get(field)!r}"
+            for field in defects
+        ]
+        return "\n".join(rows)
+
+    return "All 7 fields agree between the SI and the draft BL."
+
+
+def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> ProcessedEmail:
     """Run one email through all four stages."""
     email_id = email.get("email_id", "")
     category, _confidence = classify_email(email)
@@ -59,7 +170,7 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> EmailReport:
     )
 
     if category is not Category.BL_COMPARISON:
-        return report
+        return ProcessedEmail(report)
 
     # A BL_COMPARISON email that never carried documents and never asked for
     # a comparison (91 of them read "please assist to send the draft BL for
@@ -68,7 +179,7 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> EmailReport:
     # default OK/no-defect body rather than being flagged for review.
     if not escalate_stage.expects_comparison(email):
         report.evidence = "No documents attached and none expected — nothing to compare."
-        return report
+        return ProcessedEmail(report)
 
     attachments = list(email.get("attachments") or [])
     si_path, bl_path = escalate_stage.classify_attachments(attachments)
@@ -77,11 +188,12 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> EmailReport:
     bl_text: str | None = None
     si_fields: dict[str, str] = {}
     bl_fields: dict[str, str] = {}
+    si_error = bl_error = ""
 
     if si_path:
-        si_text, si_fields = _read(source, si_path)
+        si_text, si_fields, si_error = _read(source, si_path)
     if bl_path:
-        bl_text, bl_fields = _read(source, bl_path)
+        bl_text, bl_fields, bl_error = _read(source, bl_path)
 
     bl_is_bl = bool(bl_text) and escalate_stage.looks_like_bill_of_lading(
         bl_text, bl_fields
@@ -99,15 +211,14 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> EmailReport:
     comparison = compare_stage.compare_fields(si_fields, bl_fields)
     report.fields = comparison
 
+    defects = compare_stage.defect_fields(comparison) if reason is None else []
+
     if reason is not None:
         result.status = Status.NEEDS_REVIEW
         result.review_reason = reason
         result.has_defect = False
         result.defect_fields = []
-        return report
-
-    defects = compare_stage.defect_fields(comparison)
-    if defects:
+    elif defects:
         result.status = Status.MISMATCH
         result.has_defect = True
         result.defect_fields = defects
@@ -115,18 +226,39 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> EmailReport:
         result.status = Status.OK
         result.has_defect = False
         result.defect_fields = []
-    return report
+
+    report.evidence = _build_evidence(
+        reason, defects, attachments, bl_text, si_error, bl_error,
+        si_fields, bl_fields,
+    )
+    return ProcessedEmail(report, _excerpt(si_text), _excerpt(bl_text))
+
+
+def load_inbox(source: Path = DEFAULT_SOURCE):
+    """The dataset bundle's own Inbox, for a local folder or a server URL."""
+    sys.path.insert(0, str(source))
+    from loader import Inbox  # ships with the dataset bundle
+
+    return Inbox(str(source))
+
+
+def process_inbox(source: Path = DEFAULT_SOURCE) -> dict[str, ProcessedEmail]:
+    """Run every email through the pipeline, keyed by email_id.
+
+    This is the expensive call — it reads ~250 attachments and may consult
+    Gemini for the ambiguous ~4%. Callers that serve web requests must cache
+    the result rather than invoking it per page load.
+    """
+    return {
+        email["email_id"]: process_email(email, source) for email in load_inbox(source)
+    }
 
 
 def build_submission(source: Path = DEFAULT_SOURCE) -> dict[str, dict]:
     """Process the whole inbox into the submission shape."""
-    sys.path.insert(0, str(source))
-    from loader import Inbox  # ships with the dataset bundle
-
-    inbox = Inbox(str(source))
     return {
-        email["email_id"]: process_email(email, source).result.to_submission()
-        for email in inbox
+        email_id: processed.result.to_submission()
+        for email_id, processed in process_inbox(source).items()
     }
 
 

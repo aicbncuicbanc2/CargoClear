@@ -11,7 +11,30 @@
     .badge-mismatch { background: #fbd6d6; color: #9b1c1c; }
     .badge-review { background: #fdeeb8; color: #8a6116; }
     .badge-na { background: #e2e2e2; color: #555; }
+    .badge-category { background: #e3ecfa; color: #24457e; }
     nav.container { margin-bottom: 1rem; }
+
+    /* Row tints reuse the badge palette so the table reads the same way. */
+    tr.row-mismatch > td { background: #fdf0f0; }
+    tr.row-match > td { color: #6b6b6b; }
+    tr.row-review > td { background: #fdf8e7; }
+    .muted { color: #8a8a8a; }
+
+    .banner { border-left: 4px solid #999; padding: 0.75rem 1rem; margin: 1rem 0; }
+    .banner-ok { border-color: #1e6b3c; background: #f2fbf5; }
+    .banner-mismatch { border-color: #9b1c1c; background: #fdf0f0; }
+    .banner-review { border-color: #8a6116; background: #fdf8e7; }
+    .banner-na { border-color: #999; background: #f4f4f4; }
+
+    .stats h3 { margin-bottom: 0.1rem; }
+    .stat-mismatch { color: #9b1c1c; }
+    .stat-review { color: #8a6116; }
+    .filters { margin-bottom: 0.5rem; }
+
+    pre.evidence {
+      white-space: pre-wrap; word-break: break-word;
+      font-size: 0.82rem; padding: 0.6rem 0.8rem; margin: 0;
+    }
   </style>
 </head>
 <body>

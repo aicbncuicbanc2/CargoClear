@@ -94,6 +94,8 @@ app/
     pipeline.py          Runner: classify -> extract -> compare -> escalate
     dataset.py           Wraps data/loader.py's Inbox interface
   templates/          Jinja2 (base/inbox/email_detail/review), Pico.css via CDN
+                      base.html owns the badge palette: green=match,
+                      red=mismatch, amber=needs review, gray=not a comparison
 tests/              pytest suite (69 tests); test_dataset_coverage.py runs
                     against the real bundle and skips when data/ is absent
 docs/
@@ -133,9 +135,14 @@ not a git repo at all. Everything below was checked by running it.
 - [ ] Run against self-eval endpoint, iterate (Sun) — **blocked**: no
       legitimate scoring endpoint yet. Do not score against any
       ground-truth-derived source; see the integrity note above.
-- [ ] Report UI wired to real pipeline output (Mon) — `app/main.py` still
-      renders empty placeholder context, not pipeline output
-- [ ] Deploy to Cloud Run, get live URL (Mon)
+- [x] Report UI wired to real pipeline output (Mon) — all three screens
+      render live pipeline results, with category/status filters and an
+      in-memory cache (`app/main._REPORTS`) so the inbox runs once, not
+      per request
+- [x] Gemini key verified live (see the model-id note below)
+- [x] Dockerfile fixed and verified by simulating the container layout
+- [ ] Deploy to Cloud Run, get live URL (Mon) — **not run yet; needs the
+      user's go-ahead because it touches billing on the shared project**
 - [ ] README finalized with setup instructions (Mon)
 - [ ] Demo video, slide deck, final smoke test, submit via Google Form (Tue, before noon)
 
@@ -157,7 +164,7 @@ not a git repo at all. Everything below was checked by running it.
   `consignee` + `notify_party`.
 - Value normalization prevents 5 real false defects (all thousands
   separators, e.g. `243588` vs `243,588`).
-- `pytest tests -q` = 110 passing. `tests/test_dataset_coverage.py` asserts
+- `pytest tests -q` = 131 passing. `tests/test_dataset_coverage.py` asserts
   the figures above and auto-skips when `data/` is absent.
 
 **No scoring has been attempted.** There is no legitimate self-eval endpoint
@@ -180,6 +187,41 @@ review queue where the dataset README implies 5. That is the reasoning, but
 it is an inference from the README's "5 per review_reason" framing, not a
 verified fact — if a scoring endpoint ever becomes available, this is the
 first thing to check.
+
+### Gemini model ids move — do not hardcode
+
+`gemini-2.0-flash` was hardcoded in classify.py and now returns
+`404 ... is no longer available`. The working id as of 18 Sep is
+**`gemini-3.6-flash`**, and it is configurable via `GEMINI_MODEL` in `.env`
+rather than baked into the code. The API also returns intermittent
+`503 UNAVAILABLE` under load; `_fallback` swallows any exception and keeps
+the rule verdict, so a Gemini outage degrades accuracy on ~4% of emails
+rather than breaking the run.
+
+### Deploy: what was verified without Docker
+
+Docker is **not installed on this machine**, so `docker build` could not be
+dry-run. Instead the container layout was simulated by copying exactly what
+the Dockerfile COPYs into a scratch dir and running uvicorn there with
+`DATASET_SOURCE`/`PORT`/`GEMINI_API_KEY` supplied as environment variables
+and no `.env` file. All three screens served correctly that way.
+
+That simulation caught a real deploy blocker: the original Dockerfile copied
+only `app/`, never `data/`. Because `data/` is gitignored it would not have
+been in the build context by habit either. The failure mode was nasty —
+`/healthz` returns 200 while every real page 500s with
+`ModuleNotFoundError: No module named 'loader'` — so Cloud Run would have
+reported a healthy deployment of a completely broken app. The Dockerfile now
+copies `data/`, sets `DATASET_SOURCE=/app/data`, runs as a non-root user,
+and leaves `GEMINI_API_KEY` unset so the secret is supplied at run time. A
+`.dockerignore` keeps `.env` and `.venv` out of the image.
+
+**Still unverified:** the actual image build (pip install on
+`python:3.12-slim`, the non-root `USER` switch). Run the dry-run before
+deploying:
+
+    docker build -t shipdoc-verify .
+    docker run -p 8080:8080 -e GEMINI_API_KEY=... shipdoc-verify
 
 ### Environment gotcha specific to this machine
 

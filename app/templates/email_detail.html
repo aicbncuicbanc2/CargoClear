@@ -1,6 +1,95 @@
 {% extends "base.html" %}
-{% block title %}Email {{ email_id }} — Shipping Document Verification{% endblock %}
+{% block title %}{{ email_id }} — Shipping Document Verification{% endblock %}
 {% block content %}
-<h2>Email: {{ email_id }}</h2>
-<p><em>Comparison view not wired up yet.</em></p>
+
+{% if not found %}
+<h2>Email not found</h2>
+<p>No email with id <code>{{ email_id }}</code> is in this inbox.</p>
+<p><a href="/">Back to inbox</a></p>
+
+{% else %}
+<hgroup>
+  <h2>{{ row.subject }}</h2>
+  <p>{{ email_id }} · from {{ row.sender }}</p>
+</hgroup>
+
+<p>
+  <span class="badge badge-category">{{ row.category }}</span>
+  <span class="badge {{ row.badge }}">{{ row.status }}</span>
+  {% if row.review_reason %}<span class="badge badge-review">{{ row.review_reason }}</span>{% endif %}
+</p>
+
+{% if not is_comparison %}
+<article class="banner banner-na">
+  <strong>Not a document comparison request.</strong>
+  <p>This email was classified <code>{{ row.category }}</code>, so no SI/BL
+     comparison was performed.</p>
+</article>
+
+{% else %}
+
+{% if row.status == 'OK' %}
+<article class="banner banner-ok">
+  <strong>No mismatch detected.</strong>
+  <p>All 7 fields agree between the Shipping Instruction and the draft Bill of Lading.</p>
+</article>
+{% elif row.status == 'MISMATCH' %}
+<article class="banner banner-mismatch">
+  <strong>{{ row.defect_fields | length }} mismatch(es) detected:</strong>
+  {{ row.defect_fields | join(', ') }}
+</article>
+{% else %}
+<article class="banner banner-review">
+  <strong>Escalated for human review — {{ row.review_reason }}.</strong>
+  <p>The documents could not be compared with confidence, so no defect is claimed.</p>
+</article>
+{% endif %}
+
+<h3>Shipping Instruction vs draft Bill of Lading</h3>
+<table>
+  <thead>
+    <tr><th>Field</th><th>Shipping Instruction</th><th>Draft Bill of Lading</th><th>Result</th></tr>
+  </thead>
+  <tbody>
+    {% for field in fields %}
+    <tr class="{% if field.match is false %}row-mismatch{% elif field.match is true %}row-match{% else %}row-review{% endif %}">
+      <td><strong>{{ field.field }}</strong></td>
+      <td>{% if field.si_value %}{{ field.si_value }}{% elif field.si_value == '' %}<em class="muted">(blank)</em>{% else %}<em class="muted">(not stated)</em>{% endif %}</td>
+      <td>{% if field.bl_value %}{{ field.bl_value }}{% elif field.bl_value == '' %}<em class="muted">(blank)</em>{% else %}<em class="muted">(not stated)</em>{% endif %}</td>
+      <td>
+        {% if field.match is false %}<span class="badge badge-mismatch">mismatch</span>
+        {% elif field.match is true %}<span class="badge badge-match">match</span>
+        {% else %}<span class="badge badge-review">not comparable</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% if evidence %}
+<h3>Evidence</h3>
+<pre class="evidence">{{ evidence }}</pre>
+{% endif %}
+
+{% if si_excerpt or bl_excerpt %}
+<h3>Source documents</h3>
+<div class="grid">
+  {% if si_excerpt %}
+  <article>
+    <header><strong>Shipping Instruction</strong></header>
+    <pre class="evidence">{{ si_excerpt }}</pre>
+  </article>
+  {% endif %}
+  {% if bl_excerpt %}
+  <article>
+    <header><strong>Draft Bill of Lading</strong></header>
+    <pre class="evidence">{{ bl_excerpt }}</pre>
+  </article>
+  {% endif %}
+</div>
+{% endif %}
+
+<p><a href="/">Back to inbox</a></p>
+{% endif %}
 {% endblock %}

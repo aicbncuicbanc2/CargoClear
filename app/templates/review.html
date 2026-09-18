@@ -2,5 +2,23 @@
 {% block title %}Review queue — Shipping Document Verification{% endblock %}
 {% block content %}
 <h2>Review queue</h2>
-<p><em>Escalation queue not wired up yet.</em></p>
+<p>
+  {{ escalations | length }} email(s) could not be compared with confidence and
+  need a human. None of these is reported as a defect.
+</p>
+
+{% for item in escalations %}
+<article>
+  <header>
+    <span class="badge badge-review">{{ item.review_reason }}</span>
+    <strong><a href="/email/{{ item.email_id }}">{{ item.subject }}</a></strong>
+  </header>
+  <p><small>{{ item.email_id }} · from {{ item.sender }}</small></p>
+  {% if item.evidence %}<pre class="evidence">{{ item.evidence }}</pre>{% endif %}
+</article>
+{% else %}
+<article>
+  <p>Nothing in the review queue — every comparison resolved confidently.</p>
+</article>
+{% endfor %}
 {% endblock %}

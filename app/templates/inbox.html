@@ -2,7 +2,51 @@
 {% block title %}Inbox — Shipping Document Verification{% endblock %}
 {% block content %}
 <h2>Inbox overview</h2>
-<p><em>Pipeline not wired up yet — this is the scaffold. Coming Sat-Mon per the build plan.</em></p>
+
+<div class="grid stats">
+  <article>
+    <hgroup><h3>{{ stats.total }}</h3><p>Emails processed</p></hgroup>
+  </article>
+  <article>
+    <hgroup><h3>{{ stats.comparisons }}</h3><p>Comparison requests</p></hgroup>
+  </article>
+  <article>
+    <hgroup><h3 class="stat-mismatch">{{ stats.mismatches }}</h3><p>Mismatches found</p></hgroup>
+  </article>
+  <article>
+    <hgroup><h3 class="stat-review">{{ stats.escalated }}</h3><p>Escalated for review</p></hgroup>
+  </article>
+</div>
+
+<form method="get" action="/" class="filters">
+  <div class="grid">
+    <label>Category
+      <select name="category">
+        <option value="">All categories</option>
+        {% for value in categories %}
+        <option value="{{ value }}" {% if value == selected_category %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Status
+      <select name="status">
+        <option value="">All statuses</option>
+        {% for value in statuses %}
+        <option value="{{ value }}" {% if value == selected_status %}selected{% endif %}>{{ value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>&nbsp;
+      <div role="group">
+        <button type="submit">Filter</button>
+        <a href="/" role="button" class="secondary outline">Reset</a>
+      </div>
+    </label>
+  </div>
+</form>
+
+<p><small>Showing {{ emails | length }} of {{ stats.total }} emails.</small></p>
+
 <table>
   <thead>
     <tr><th>Subject</th><th>Sender</th><th>Category</th><th>Status</th><th>Timestamp</th></tr>
@@ -12,12 +56,16 @@
     <tr>
       <td><a href="/email/{{ email.email_id }}">{{ email.subject }}</a></td>
       <td>{{ email.sender }}</td>
-      <td>{{ email.category }}</td>
-      <td><span class="badge badge-na">{{ email.status }}</span></td>
+      <td><span class="badge badge-category">{{ email.category }}</span></td>
+      <td>
+        <span class="badge {{ email.badge }}">{{ email.status }}</span>
+        {% if email.review_reason %}<br><small>{{ email.review_reason }}</small>{% endif %}
+        {% if email.defect_fields %}<br><small>{{ email.defect_fields | join(', ') }}</small>{% endif %}
+      </td>
       <td>{{ email.timestamp }}</td>
     </tr>
     {% else %}
-    <tr><td colspan="5">No emails processed yet.</td></tr>
+    <tr><td colspan="5">No emails match this filter.</td></tr>
     {% endfor %}
   </tbody>
 </table>

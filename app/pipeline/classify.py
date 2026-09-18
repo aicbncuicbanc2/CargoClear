@@ -278,6 +278,7 @@ Body:
 
 def classify_with_gemini(email: dict) -> Category | None:
     """Single-label classification via Gemini. Returns None if unparseable."""
+    from app.config import settings
     from app.gemini_client import get_client
 
     client = get_client()
@@ -286,7 +287,7 @@ def classify_with_gemini(email: dict) -> Category | None:
         body=_text_of(email, "body", "text", "content")[:4000],
     )
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model=settings.gemini_model,
         contents=prompt,
     )
     answer = (getattr(response, "text", "") or "").strip().upper()

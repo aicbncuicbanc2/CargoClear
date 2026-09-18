@@ -158,7 +158,7 @@ def test_full_pipeline_email_004_matches_the_hand_trace():
     """All four stages end to end, against docs/manual-trace-email_004.md."""
     from app.pipeline.pipeline import process_email
 
-    report = process_email(_inbox().get("email_004"), DATA)
+    report = process_email(_inbox().get("email_004"), DATA).report
     assert report.result.to_submission() == {
         "category": "BL_COMPARISON",
         "status": "MISMATCH",

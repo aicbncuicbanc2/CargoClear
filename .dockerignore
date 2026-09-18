@@ -1,0 +1,23 @@
+# Secrets — must never be baked into an image that gets pushed to a registry.
+.env
+
+# Local virtualenv: large, platform-specific, and reinstalled from
+# requirements.txt inside the image anyway.
+.venv/
+venv/
+
+.git/
+.gitignore
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Not needed at runtime.
+tests/
+docs/
+README.md
+CLAUDE.md
+submission.json
+Dockerfile
+.dockerignore
