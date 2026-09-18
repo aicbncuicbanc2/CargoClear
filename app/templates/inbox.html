@@ -49,7 +49,7 @@
 
 <table>
   <thead>
-    <tr><th>Subject</th><th>Sender</th><th>Category</th><th>Status</th><th>Timestamp</th></tr>
+    <tr><th>Subject</th><th>Sender</th><th>Category</th><th>Status</th><th>Attachments</th></tr>
   </thead>
   <tbody>
     {% for email in emails %}
@@ -62,7 +62,7 @@
         {% if email.review_reason %}<br><small>{{ email.review_reason }}</small>{% endif %}
         {% if email.defect_fields %}<br><small>{{ email.defect_fields | join(', ') }}</small>{% endif %}
       </td>
-      <td>{{ email.timestamp }}</td>
+      <td>{{ email.attachment_count }}</td>
     </tr>
     {% else %}
     <tr><td colspan="5">No emails match this filter.</td></tr>

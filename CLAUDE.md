@@ -141,8 +141,10 @@ not a git repo at all. Everything below was checked by running it.
       per request
 - [x] Gemini key verified live (see the model-id note below)
 - [x] Dockerfile fixed and verified by simulating the container layout
-- [ ] Deploy to Cloud Run, get live URL (Mon) — **not run yet; needs the
-      user's go-ahead because it touches billing on the shared project**
+- [x] Deployed to Cloud Run (Mon). **Live URL:
+      https://shipdoc-verify-a5povl5zsa-as.a.run.app**
+      Project `cargoclear-509012`, region `asia-southeast1`, service
+      `shipdoc-verify`, public (`--allow-unauthenticated`).
 - [ ] README finalized with setup instructions (Mon)
 - [ ] Demo video, slide deck, final smoke test, submit via Google Form (Tue, before noon)
 
@@ -164,7 +166,7 @@ not a git repo at all. Everything below was checked by running it.
   `consignee` + `notify_party`.
 - Value normalization prevents 5 real false defects (all thousands
   separators, e.g. `243588` vs `243,588`).
-- `pytest tests -q` = 131 passing. `tests/test_dataset_coverage.py` asserts
+- `pytest tests -q` = 135 passing. `tests/test_dataset_coverage.py` asserts
   the figures above and auto-skips when `data/` is absent.
 
 **No scoring has been attempted.** There is no legitimate self-eval endpoint
@@ -222,6 +224,53 @@ deploying:
 
     docker build -t shipdoc-verify .
     docker run -p 8080:8080 -e GEMINI_API_KEY=... shipdoc-verify
+
+### Deploying again — four traps, all of them hit on the first attempt
+
+Redeploy with (from **PowerShell**, not Git Bash — see trap 2):
+
+    gcloud run deploy shipdoc-verify --source . --project cargoclear-509012       --region asia-southeast1 --allow-unauthenticated       --set-env-vars "GEMINI_API_KEY=<key>,GEMINI_MODEL=gemini-3.6-flash,DATASET_SOURCE=/app/data"
+
+1. **Cloud Build's service account starts with no permissions.** The first
+   deploy died with `PERMISSION_DENIED ... could not resolve source`. Projects
+   created after Google's 2024 change no longer grant the default compute SA
+   the Editor role, so Cloud Build cannot read its own uploaded source. Fixed
+   once, permanently, by granting
+   `roles/cloudbuild.builds.builder` to
+   `142988436999-compute@developer.gserviceaccount.com`.
+
+2. **Git Bash silently rewrites POSIX paths in gcloud arguments.**
+   `DATASET_SOURCE=/app/data` arrived in the container as
+   `C:/Program Files/Git/app/data` (MSYS2 path mangling). That is not
+   absolute on Linux, so it resolved under the repo root, the dataset was
+   never found, and every page 500'd with `ModuleNotFoundError: No module
+   named 'loader'` — the *same symptom* as trap 3 but a completely different
+   cause, which made it easy to misdiagnose. Run gcloud from PowerShell, or
+   set `MSYS_NO_PATHCONV=1`.
+
+3. **`.gcloudignore` must exist, and must not exclude `data/`.** Without it
+   gcloud falls back to `.gitignore` to decide what to upload — and the
+   dataset is deliberately gitignored. The build still succeeds (`COPY data
+   ./data` copies a directory holding only `.gitkeep`) and the service then
+   500s on every page. A local `docker build` cannot catch this: it reads
+   `.dockerignore`, which has no reason to exclude `data/`.
+
+4. **`/healthz` does not work on `*.run.app`.** Google's edge intercepts that
+   exact path: it returns a Google HTML 404 with no `server: Google Frontend`
+   and no `x-cloud-trace-context` header, and the request never appears in
+   Cloud Run's request logs. An unknown path like `/nope` correctly returns
+   FastAPI's JSON 404, so this is specific to `/healthz`. The app therefore
+   serves the same handler at **`/health`**, which is the path to probe in
+   production. `/healthz` is kept for local runs and other hosts.
+
+### Verified live after deploy
+
+`/health` 200, `/` 200, `/review` 200, `/email/email_004` 200. Stats header
+reads 520 / 220 / 48 / 20, the review queue holds 20 entries at 5 per reason,
+and email_004 renders the hand trace exactly — MISMATCH on consignee +
+notify_party with the other five fields matching. Cold start (first request,
+which runs the whole pipeline) ~14s; every later request ~0.2-0.6s from the
+in-memory cache.
 
 ### Environment gotcha specific to this machine
 

@@ -65,6 +65,10 @@ class ProcessedEmail:
     report: EmailReport
     si_excerpt: str = ""
     bl_excerpt: str = ""
+    # How many files the email actually carried. Shown in the inbox table:
+    # the dataset has no timestamp field, so this is the real per-email
+    # fact worth surfacing there.
+    attachment_count: int = 0
 
     @property
     def result(self) -> EmailResult:
@@ -169,8 +173,10 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> ProcessedEmail:
         result=result,
     )
 
+    attachment_count = len(email.get("attachments") or [])
+
     if category is not Category.BL_COMPARISON:
-        return ProcessedEmail(report)
+        return ProcessedEmail(report, attachment_count=attachment_count)
 
     # A BL_COMPARISON email that never carried documents and never asked for
     # a comparison (91 of them read "please assist to send the draft BL for
@@ -179,7 +185,7 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> ProcessedEmail:
     # default OK/no-defect body rather than being flagged for review.
     if not escalate_stage.expects_comparison(email):
         report.evidence = "No documents attached and none expected — nothing to compare."
-        return ProcessedEmail(report)
+        return ProcessedEmail(report, attachment_count=attachment_count)
 
     attachments = list(email.get("attachments") or [])
     si_path, bl_path = escalate_stage.classify_attachments(attachments)
@@ -231,7 +237,12 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> ProcessedEmail:
         reason, defects, attachments, bl_text, si_error, bl_error,
         si_fields, bl_fields,
     )
-    return ProcessedEmail(report, _excerpt(si_text), _excerpt(bl_text))
+    return ProcessedEmail(
+        report,
+        _excerpt(si_text),
+        _excerpt(bl_text),
+        attachment_count=attachment_count,
+    )
 
 
 def load_inbox(source: Path = DEFAULT_SOURCE):

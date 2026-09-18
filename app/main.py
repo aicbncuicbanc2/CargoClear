@@ -94,8 +94,10 @@ def _as_row(processed: ProcessedEmail) -> dict:
         "badge": status_badge(result.status.value, result.category.value),
         "defect_fields": result.defect_fields,
         # The dataset carries no timestamp field (email_id, from, subject,
-        # body, attachments), so there is nothing truthful to show here.
-        "timestamp": "—",
+        # body, attachments), so the table shows attachment count instead —
+        # a real per-email fact, and the one that decides whether a
+        # comparison was even possible.
+        "attachment_count": processed.attachment_count,
     }
 
 
@@ -178,7 +180,19 @@ def review_queue(request: Request):
 
 
 @app.get("/healthz")
+@app.get("/health")
 def healthz():
-    """Liveness probe. Deliberately does not touch the pipeline cache, so it
-    answers instantly while the first inbox run is still in flight."""
+    """Liveness probe, served at two paths.
+
+    Deliberately does not touch the pipeline cache, so it answers instantly
+    while the first inbox run is still in flight.
+
+    /health exists because on Cloud Run's *.run.app domains, /healthz is
+    swallowed by Google's edge infrastructure and never reaches the
+    container: it comes back as a Google HTML 404 with no
+    `server: Google Frontend` or `x-cloud-trace-context` header, while an
+    unknown path like /nope correctly returns FastAPI's JSON 404. /healthz
+    is kept for local runs and any other host; /health is the one to probe
+    in production.
+    """
     return {"status": "ok"}

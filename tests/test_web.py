@@ -27,6 +27,7 @@ def _processed(
     defect_fields: list[str] | None = None,
     fields: list[FieldValue] | None = None,
     evidence: str = "",
+    attachment_count: int = 2,
 ) -> ProcessedEmail:
     result = EmailResult(
         category=category,
@@ -43,7 +44,12 @@ def _processed(
         fields=fields or [],
         evidence=evidence,
     )
-    return ProcessedEmail(report, si_excerpt="SI HEADER", bl_excerpt="BL HEADER")
+    return ProcessedEmail(
+        report,
+        si_excerpt="SI HEADER",
+        bl_excerpt="BL HEADER",
+        attachment_count=attachment_count,
+    )
 
 
 FIELDS = [
@@ -76,7 +82,7 @@ FIXTURE = {
         review_reason="wrong_doc_type",
         evidence="The second attachment is not a Bill of Lading.",
     ),
-    "email_008": _processed("email_008", Category.SI_REQUEST),
+    "email_008": _processed("email_008", Category.SI_REQUEST, attachment_count=0),
     "email_026": _processed("email_026", Category.SPAM),
 }
 
@@ -100,6 +106,13 @@ def test_healthz(client):
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
+def test_health_alias(client):
+    """On Cloud Run's *.run.app domains /healthz is intercepted by Google's
+    edge and never reaches the container, so the service also answers on
+    /health. Probe that one in production."""
+    assert client.get("/health").json() == {"status": "ok"}
+
+
 def test_inbox_lists_every_email(client):
     body = client.get("/").text
     assert "Showing 5 of 5 emails." in body
@@ -115,6 +128,24 @@ def test_inbox_stats_header(client):
     assert "Comparison requests" in body
     assert "Mismatches found" in body
     assert "Escalated for review" in body
+
+
+def test_inbox_shows_attachment_count_not_a_timestamp():
+    """The dataset has no timestamp field, so the column reports the real
+    attachment count rather than a fabricated date."""
+    row = main._as_row(FIXTURE["email_004"])
+    assert row["attachment_count"] == 2
+    assert "timestamp" not in row
+
+
+def test_inbox_table_renders_the_attachment_column(client):
+    body = client.get("/").text
+    assert "<th>Attachments</th>" in body
+    assert "<th>Timestamp</th>" not in body
+
+
+def test_email_with_no_attachments_shows_zero(client):
+    assert main._as_row(FIXTURE["email_008"])["attachment_count"] == 0
 
 
 def test_filter_by_category(client):
