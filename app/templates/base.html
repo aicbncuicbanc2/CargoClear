@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Shipping Document Verification{% endblock %}</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    .badge { padding: 0.15rem 0.6rem; border-radius: 999px; font-size: 0.8rem; font-weight: 600; }
+    .badge-match { background: #d4f4dd; color: #1e6b3c; }
+    .badge-mismatch { background: #fbd6d6; color: #9b1c1c; }
+    .badge-review { background: #fdeeb8; color: #8a6116; }
+    .badge-na { background: #e2e2e2; color: #555; }
+    nav.container { margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <nav class="container">
+    <ul><li><strong>Shipping Document Verification</strong></li></ul>
+    <ul>
+      <li><a href="/">Inbox</a></li>
+      <li><a href="/review">Review queue</a></li>
+    </ul>
+  </nav>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

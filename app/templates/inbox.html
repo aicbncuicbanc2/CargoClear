@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Inbox — Shipping Document Verification{% endblock %}
+{% block content %}
+<h2>Inbox overview</h2>
+<p><em>Pipeline not wired up yet — this is the scaffold. Coming Sat-Mon per the build plan.</em></p>
+<table>
+  <thead>
+    <tr><th>Subject</th><th>Sender</th><th>Category</th><th>Status</th><th>Timestamp</th></tr>
+  </thead>
+  <tbody>
+    {% for email in emails %}
+    <tr>
+      <td><a href="/email/{{ email.email_id }}">{{ email.subject }}</a></td>
+      <td>{{ email.sender }}</td>
+      <td>{{ email.category }}</td>
+      <td><span class="badge badge-na">{{ email.status }}</span></td>
+      <td>{{ email.timestamp }}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="5">No emails processed yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}
