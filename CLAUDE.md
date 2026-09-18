@@ -89,8 +89,9 @@ app/
     models.py         Category/Status/ReviewReason enums + EmailResult (submission shape)
     classify.py        Stage 1 — DONE. Weighted signal rules + Gemini fallback
     extract.py          Stage 2 — DONE. Alias matching + txt/pdf/docx/xlsx readers
-    compare.py           Stage 3 — NotImplementedError stub
-    escalate.py           Stage 4 — NotImplementedError stub, review_reason triggers documented
+    compare.py           Stage 3 — DONE. Normalizing deterministic diff
+    escalate.py           Stage 4 — DONE. All 4 review_reason triggers
+    pipeline.py          Runner: classify -> extract -> compare -> escalate
     dataset.py           Wraps data/loader.py's Inbox interface
   templates/          Jinja2 (base/inbox/email_detail/review), Pico.css via CDN
 tests/              pytest suite (69 tests); test_dataset_coverage.py runs
@@ -125,28 +126,60 @@ not a git repo at all. Everything below was checked by running it.
 - [x] Classify stage (Sat) — deterministic weighted signals + Gemini
       fallback below `CONFIDENCE_FLOOR`
 - [x] Extract stage (Sat) — anchored alias matching over txt/pdf/docx/xlsx
-- [ ] Compare stage (Sun)
-- [ ] Escalate/review-reason logic (Sun)
-- [ ] Run against self-eval endpoint, iterate (Sun)
+- [x] Compare stage (Sun) — deterministic diff with value normalization
+- [x] Escalate/review-reason logic (Sun) — all 4 reasons
+- [x] End-to-end runner: `python -m app.pipeline.pipeline` writes
+      `submission.json` for all 520 emails (gitignored — it is generated)
+- [ ] Run against self-eval endpoint, iterate (Sun) — **blocked**: no
+      legitimate scoring endpoint yet. Do not score against any
+      ground-truth-derived source; see the integrity note above.
 - [ ] Report UI wired to real pipeline output (Mon) — `app/main.py` still
       renders empty placeholder context, not pipeline output
 - [ ] Deploy to Cloud Run, get live URL (Mon)
 - [ ] README finalized with setup instructions (Mon)
 - [ ] Demo video, slide deck, final smoke test, submit via Google Form (Tue, before noon)
 
-### Measured state of stages 1-2 (against the real dataset, not fixtures)
+### Measured state of the pipeline (against the real dataset, not fixtures)
 
 - Extraction: all 7 fields recovered from **every** non-edge-case document
   (168 txt, 20 pdf, 22 xlsx, 8 docx). The only documents that do not fully
   extract are the 20 purpose-built edge cases, which are *meant* to fail.
-- 64 of 119 comparable SI/BL pairs agree on all 7 fields; the rest differ on
-  1-3 fields, which is the shape real seeded defects should have.
 - Classification: category mix lands within ~2.3 points of the README's
   stated distribution on all five categories, and 96% of the inbox is
   decided by rules alone — only ~4% falls below `CONFIDENCE_FLOOR` and
   would consult Gemini.
-- `pytest tests -q` = 69 passing. `tests/test_dataset_coverage.py` asserts
+- Full run over 520 emails:
+  `BL_COMPARISON` 48 MISMATCH / 152 OK / 20 NEEDS_REVIEW, and
+  `SI_REQUEST` 132, `INVOICE_QUERY` 78, `GENERAL` 53, `SPAM` 37 (all OK).
+- Escalation: exactly 20 NEEDS_REVIEW, all inside email_501-520, exactly 5
+  per review_reason, each landing in its correct group.
+- `email_004` reproduces the hand trace exactly: MISMATCH on
+  `consignee` + `notify_party`.
+- Value normalization prevents 5 real false defects (all thousands
+  separators, e.g. `243588` vs `243,588`).
+- `pytest tests -q` = 110 passing. `tests/test_dataset_coverage.py` asserts
   the figures above and auto-skips when `data/` is absent.
+
+**No scoring has been attempted.** There is no legitimate self-eval endpoint
+yet, and the organizers' `ground_truth.json` must never be used. Every
+figure above is either a structural invariant or a comparison against the
+dataset README's own description — never against withheld labels.
+
+### Judgment call worth revisiting: BL_COMPARISON emails with no documents
+
+94 emails classify as `BL_COMPARISON` but carry no attachments. 91 of them
+read "Please assist to send the draft BL ... for checking" — they are
+*requesting* a draft, not failing a comparison, and they are reported
+`status=OK` with no review reason, on the grounds that no comparison was
+ever attempted. The other 3 (email_506/508/510) read "Please compare the SI
+and draft BL ... (attachments appear to have been dropped)" and *are*
+`missing_attachment`.
+
+Treating all 94 as `missing_attachment` instead would put 96 emails in the
+review queue where the dataset README implies 5. That is the reasoning, but
+it is an inference from the README's "5 per review_reason" framing, not a
+verified fact — if a scoring endpoint ever becomes available, this is the
+first thing to check.
 
 ### Environment gotcha specific to this machine
 
@@ -156,23 +189,29 @@ only the standard library (a .docx is a zip of XML). Do not "fix" this by
 reintroducing python-docx; it would work on Cloud Run but break every local
 test run.
 
-### Things stage 3/4 will need to handle (found while building stage 2)
+### Design notes carried by stages 2-4
 
-- `extract_fields` returns `None` both for a field whose label is absent and
-  for one that is present but blank. If `missing_value` needs to be told
-  apart from the other review reasons, that distinction has to be recovered
-  in stage 4 or surfaced from stage 2.
-- Values are **not** normalized: `243588` vs `243,588` and
-  `MOMBASA, KENYA (KEMBA)` vs `MOMBASA, KENYA` are formatting differences,
-  not defects. Numeric/whitespace/punctuation normalization belongs in
-  `compare.py`, or it will manufacture false mismatches.
-- The edge-case groups are contiguous and identifiable: 501-505
-  wrong_doc_type (BL is a Commercial Invoice etc.), 506-510
-  missing_attachment (0 or 1 attachment), 511-515 unreadable (scanned or
-  truncated PDFs), 516-520 missing_value (`N/A`, `TBA`, blank).
+- `extract_fields` is **tri-state**: a key is absent when the label does not
+  appear, `""` when the label appears but the value is blank, and a string
+  otherwise. `missing_value` depends on that distinction — use
+  `is_present` / `is_blank` / `is_usable`, never a truth test on the value.
+- `compare.py` normalizes whitespace, case, and thousands separators before
+  diffing, and deliberately does **not** strip parenthetical port codes:
+  "MOMBASA, KENYA (KEMBA)" vs "TUTICORIN, INDIA (KEMBA)" is a real seeded
+  defect where the stale code was left behind.
+- Escalation precedence is `missing_attachment -> unreadable ->
+  wrong_doc_type -> missing_value`, which is the order in which each check
+  becomes possible: a document's type cannot be judged before it can be
+  read, and its values cannot be judged before its type is known.
+- The edge-case groups are contiguous: 501-505 wrong_doc_type (BL is a
+  Commercial Invoice, Packing List or Certificate of Origin), 506-510
+  missing_attachment, 511-515 unreadable (scanned or truncated PDFs),
+  516-520 missing_value (`N/A`, `TBA`, blank).
 - `Seller:` / `Buyer:` are deliberately **not** aliased to shipper/consignee.
   Aliasing them would populate fields from the Commercial Invoices in
   501-505 and make `wrong_doc_type` undetectable.
+- 10 SI documents are headed "BILL OF LADING INSTRUCTION". The BL sniffer
+  excludes that phrase explicitly, or every SI would look like a BL.
 
 ## Day-by-day (from the original build plan)
 

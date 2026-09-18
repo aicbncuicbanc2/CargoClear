@@ -240,21 +240,52 @@ def is_blank_value(value: str | None) -> bool:
     return bool(re.fullmatch(r"[_.\-*·\s]+", stripped))
 
 
+def is_present(fields: dict[str, str], name: str) -> bool:
+    """The document mentions this field at all (blank or not)."""
+    return name in fields
+
+
+def is_blank(fields: dict[str, str], name: str) -> bool:
+    """The document has the label but left the value blank — the condition
+    behind review_reason='missing_value'."""
+    return fields.get(name, None) == ""
+
+
+def is_usable(fields: dict[str, str], name: str) -> bool:
+    """There is a real value here to compare against."""
+    return bool(fields.get(name))
+
+
+def blank_fields(fields: dict[str, str]) -> list[str]:
+    """Comparison fields present in the document but left blank."""
+    return [name for name in COMPARISON_FIELDS if is_blank(fields, name)]
+
+
 def _looks_like_label(line: str) -> bool:
     """Does this line start a new labelled field (rather than continue the
     previous value)? Used to stop multi-line value capture."""
     return match_label(line) is not None
 
 
-def extract_fields(document_text: str) -> dict[str, str | None]:
+def extract_fields(document_text: str) -> dict[str, str]:
     """Pull the 7 comparison fields out of one document's text.
 
-    All 7 keys are always present; a field is None when it is absent from
-    the document or present-but-blank (both are stage 4's problem, not a
-    mismatch). The first occurrence of a field wins — shipping documents
-    repeat labels in footers and continuation pages.
+    The return value is tri-state, because stage 4 has to tell "the document
+    never mentions this field" apart from "the document has the field and
+    left it blank" — only the latter is review_reason='missing_value':
+
+        key absent          the label does not appear in the document
+        key present, ""     the label appears but the value is blank
+                            (a write-in blank, "???", "TBA", "N/A")
+        key present, text   the extracted value
+
+    Use `is_present`/`is_blank`/`is_usable` rather than truth-testing the
+    value, so an empty string is never mistaken for an absent field.
+
+    The first occurrence of a field wins — shipping documents repeat labels
+    in footers and continuation pages.
     """
-    fields: dict[str, str | None] = {field: None for field in COMPARISON_FIELDS}
+    fields: dict[str, str] = {}
     best_rank: dict[str, int] = {}
 
     lines = document_text.splitlines()
@@ -278,7 +309,9 @@ def extract_fields(document_text: str) -> dict[str, str | None]:
                 value = following
 
         best_rank[field] = rank
-        fields[field] = None if is_blank_value(value) else value
+        # "" records "label found, value blank" — distinct from the key
+        # being absent entirely. See this function's docstring.
+        fields[field] = "" if is_blank_value(value) else value
 
     return fields
 
@@ -445,6 +478,6 @@ def _read_xlsx(path: Path) -> str:
     return "\n".join(lines)
 
 
-def extract_from_file(path: str | Path) -> dict[str, str | None]:
+def extract_from_file(path: str | Path) -> dict[str, str]:
     """Convenience: read a document of any supported format and extract."""
     return extract_fields(read_document(path))

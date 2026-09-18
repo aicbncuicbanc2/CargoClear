@@ -12,8 +12,12 @@ import pytest
 
 from app.pipeline.extract import (
     FIELD_ALIASES,
+    blank_fields,
     extract_fields,
+    is_blank,
     is_blank_value,
+    is_present,
+    is_usable,
     normalize_label,
 )
 from app.pipeline.models import COMPARISON_FIELDS
@@ -78,10 +82,15 @@ def test_traced_defect_fields_are_the_two_that_differ():
     assert differing == ["consignee", "notify_party"]
 
 
-def test_every_field_key_is_always_present():
+def test_fields_never_mentioned_are_absent_not_blank():
+    """Absent and blank must stay distinguishable: only blank is
+    review_reason='missing_value'."""
     fields = extract_fields("Subject: nothing useful here")
-    assert set(fields) == set(COMPARISON_FIELDS)
-    assert all(value is None for value in fields.values())
+    assert fields == {}
+    for name in COMPARISON_FIELDS:
+        assert not is_present(fields, name)
+        assert not is_blank(fields, name)
+        assert not is_usable(fields, name)
 
 
 def test_block_layout_takes_the_first_line_below_the_label():
@@ -122,14 +131,19 @@ Gross Weight (KG):
 """
     fields = extract_fields(text)
     assert fields["shipper"] == "APRIL FAR EAST (M) SDN BHD"
-    for field in [
+    expected_blank = [
         "consignee",
         "notify_party",
         "port_of_loading",
         "port_of_discharge",
         "gross_weight_kg",
-    ]:
-        assert fields[field] is None, field
+    ]
+    for field in expected_blank:
+        # Present in the document, but with no value: "" not absent.
+        assert is_present(fields, field), field
+        assert is_blank(fields, field), field
+        assert fields[field] == "", field
+    assert sorted(blank_fields(fields)) == sorted(expected_blank)
 
 
 @pytest.mark.parametrize(
@@ -175,8 +189,8 @@ def test_short_aliases_do_not_fire_inside_unrelated_labels():
     whole-label, not substring."""
     text = "Freight Payable At: SINGAPORE\nPre-carriage by: TRUCK\n"
     fields = extract_fields(text)
-    assert fields["port_of_discharge"] is None
-    assert fields["port_of_loading"] is None
+    assert not is_present(fields, "port_of_discharge")
+    assert not is_present(fields, "port_of_loading")
 
 
 def test_normalize_label_flattens_punctuation_and_case():
@@ -247,14 +261,14 @@ Seller: APRIL FINE PAPER TRADING (MIDDLE EAST) FZE
 Buyer: KPP-ANTALIS (SINGAPORE) PTE. LTD.
 """
     fields = extract_fields(text)
-    assert all(value is None for value in fields.values())
+    assert fields == {}
 
 
 def test_possessive_label_is_not_read_as_the_field():
     fields = extract_fields("Shipper's Reference: ABC-123\n")
-    assert fields["shipper"] is None
+    assert not is_present(fields, "shipper")
 
 
 def test_net_weight_is_not_gross_weight():
     fields = extract_fields("Net Weight: 19,400 KG\n")
-    assert fields["gross_weight_kg"] is None
+    assert not is_present(fields, "gross_weight_kg")

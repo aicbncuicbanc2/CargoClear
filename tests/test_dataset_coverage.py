@@ -15,7 +15,12 @@ from pathlib import Path
 
 import pytest
 
-from app.pipeline.extract import UnreadableDocument, extract_fields, read_document
+from app.pipeline.extract import (
+    UnreadableDocument,
+    extract_fields,
+    is_usable,
+    read_document,
+)
 from app.pipeline.models import COMPARISON_FIELDS
 
 DATA = Path(__file__).resolve().parent.parent / "data"
@@ -54,7 +59,7 @@ def test_every_main_document_extracts_all_seven_fields():
             except UnreadableDocument as exc:  # pragma: no cover - would be a bug
                 incomplete.append((attachment, f"unreadable: {exc}"))
                 continue
-            missing = [f for f in COMPARISON_FIELDS if fields[f] is None]
+            missing = [f for f in COMPARISON_FIELDS if not is_usable(fields, f)]
             if missing:
                 incomplete.append((attachment, missing))
     assert not incomplete, f"{len(incomplete)} documents incomplete: {incomplete[:5]}"
@@ -72,7 +77,7 @@ def test_all_four_binary_formats_are_exercised():
                 fields = extract_fields(read_document(DATA / attachment))
             except UnreadableDocument:
                 continue
-            if all(fields[f] is not None for f in COMPARISON_FIELDS):
+            if all(is_usable(fields, f) for f in COMPARISON_FIELDS):
                 seen[suffix] = seen.get(suffix, 0) + 1
     # Current state: every non-edge-case document of every format extracts
     # all 7 fields, so each floor is that format's full count.
@@ -98,7 +103,7 @@ def test_email_004_matches_the_hand_trace():
     verified by hand against the real files."""
     si = extract_fields(read_document(DATA / "attachments/email_004_SI.txt"))
     bl = extract_fields(read_document(DATA / "attachments/email_004_BL.txt"))
-    differing = sorted(f for f in COMPARISON_FIELDS if si[f] != bl[f])
+    differing = sorted(f for f in COMPARISON_FIELDS if si.get(f) != bl.get(f))
     assert differing == ["consignee", "notify_party"]
     assert si["consignee"] == "EAST BRIGHT FZ-LLC"
     assert bl["consignee"] == "UAB NOVAKOPA"
@@ -149,6 +154,82 @@ def test_most_emails_are_classified_without_calling_gemini(monkeypatch):
     assert deferred / 520 <= 0.15, f"{deferred}/520 would call Gemini"
 
 
+def test_full_pipeline_email_004_matches_the_hand_trace():
+    """All four stages end to end, against docs/manual-trace-email_004.md."""
+    from app.pipeline.pipeline import process_email
+
+    report = process_email(_inbox().get("email_004"), DATA)
+    assert report.result.to_submission() == {
+        "category": "BL_COMPARISON",
+        "status": "MISMATCH",
+        "review_reason": None,
+        "has_defect": True,
+        "defect_fields": ["consignee", "notify_party"],
+    }
+
+
+def test_submission_matches_the_sample_shape():
+    import json
+
+    from app.pipeline.pipeline import build_submission
+
+    submission = build_submission(DATA)
+    sample = json.loads((DATA / "sample_submission.json").read_text())
+
+    assert set(submission) == set(sample)
+    for email_id, entry in submission.items():
+        assert set(entry) == set(sample[email_id]), email_id
+        assert isinstance(entry["category"], str)
+        assert isinstance(entry["status"], str)
+        assert isinstance(entry["has_defect"], bool)
+        assert isinstance(entry["defect_fields"], list)
+        # review_reason is set if and only if the status is NEEDS_REVIEW.
+        assert (entry["review_reason"] is not None) == (
+            entry["status"] == "NEEDS_REVIEW"
+        ), email_id
+        # A blank or unreadable field is never a mismatch.
+        assert entry["has_defect"] == bool(entry["defect_fields"]), email_id
+        if entry["status"] != "MISMATCH":
+            assert entry["defect_fields"] == [], email_id
+
+
+def test_edge_cases_resolve_to_the_right_review_reason():
+    """email_501-520 are purpose-built, 5 per reason. The dataset README
+    describes the grouping; this asserts the shape rather than hardcoding a
+    scoring answer, and fails loudly if the ranges drift."""
+    from app.pipeline.pipeline import build_submission
+
+    submission = build_submission(DATA)
+
+    expected_groups = {
+        "wrong_doc_type": range(501, 506),
+        "missing_attachment": range(506, 511),
+        "unreadable": range(511, 516),
+        "missing_value": range(516, 521),
+    }
+    for reason, id_range in expected_groups.items():
+        for number in id_range:
+            entry = submission[f"email_{number}"]
+            assert entry["status"] == "NEEDS_REVIEW", f"email_{number}: {entry}"
+            assert entry["review_reason"] == reason, f"email_{number}: {entry}"
+            assert entry["has_defect"] is False
+            assert entry["defect_fields"] == []
+
+
+def test_review_queue_is_not_flooded():
+    """NEEDS_REVIEW is for the cases that genuinely cannot be decided. If it
+    starts catching ordinary mail, the escalation rules have gone wrong —
+    this caught exactly that: 111 escalations before the 'request to send a
+    draft BL' emails were distinguished from failed comparisons."""
+    from app.pipeline.pipeline import build_submission
+
+    submission = build_submission(DATA)
+    flagged = [k for k, v in submission.items() if v["status"] == "NEEDS_REVIEW"]
+    assert len(flagged) <= 40, f"{len(flagged)} emails escalated: {flagged[:10]}"
+    outside = [k for k in flagged if k not in EDGE_CASE_IDS]
+    assert not outside, f"escalations outside the edge-case range: {outside}"
+
+
 def test_pairs_are_not_systematically_mismatched():
     """A parsing artifact that leaks into values (a stray '): ' prefix, a
     CJK gloss) shows up as nearly every pair differing. Real defects affect
@@ -167,7 +248,7 @@ def test_pairs_are_not_systematically_mismatched():
         except UnreadableDocument:
             continue
         pairs += 1
-        if all(si_fields[f] == bl_fields[f] for f in COMPARISON_FIELDS):
+        if all(si_fields.get(f) == bl_fields.get(f) for f in COMPARISON_FIELDS):
             clean += 1
     assert pairs >= 100, pairs
     assert clean / pairs >= 0.5, f"only {clean}/{pairs} pairs agree on all 7 fields"
