@@ -84,7 +84,10 @@ def test_every_field_key_is_always_present():
     assert all(value is None for value in fields.values())
 
 
-def test_block_layout_value_on_following_lines():
+def test_block_layout_takes_the_first_line_below_the_label():
+    """Only the identity line is taken, not the trailing address lines: SI
+    and BL wrap the same party's address differently, so comparing whole
+    blocks would manufacture mismatches."""
     text = """Shipper:
 ACME EXPORTS SDN BHD
 LOT 5, JALAN PERUSAHAAN
@@ -92,8 +95,20 @@ LOT 5, JALAN PERUSAHAAN
 Consignee: NORTHWIND TRADING GMBH
 """
     fields = extract_fields(text)
-    assert fields["shipper"] == "ACME EXPORTS SDN BHD LOT 5, JALAN PERUSAHAAN"
+    assert fields["shipper"] == "ACME EXPORTS SDN BHD"
     assert fields["consignee"] == "NORTHWIND TRADING GMBH"
+
+
+def test_inline_value_ignores_following_address_lines():
+    """The .pdf pairs write the name inline then continue the address."""
+    text = """Shipper APRIL FINE PAPER TRADING
+ON BEHALF OF VITAL SOLUTIONS PTE LTD
+77 ROBINSON ROAD, #21-01
+Load Port BUATAN, INDONESIA
+"""
+    fields = extract_fields(text)
+    assert fields["shipper"] == "APRIL FINE PAPER TRADING"
+    assert fields["port_of_loading"] == "BUATAN, INDONESIA"
 
 
 def test_blank_markers_read_as_missing_not_as_values():
@@ -172,3 +187,74 @@ def test_normalize_label_flattens_punctuation_and_case():
 
 def test_alias_table_covers_exactly_the_seven_fields():
     assert set(FIELD_ALIASES) == set(COMPARISON_FIELDS)
+
+
+# --- regressions taken verbatim from data/attachments -----------------------
+# Each line below was copied from a real document during the alias-extension
+# pass; the bugs they pin were all found that way, not hypothesised.
+
+
+def test_parenthesised_code_is_not_left_on_the_value():
+    """'Port of Loading (POL): X' must not yield '): X'."""
+    fields = extract_fields("Port of Loading (POL): PORT KLANG (WESTPORT), MALAYSIA (MYPKG)\n")
+    assert fields["port_of_loading"] == "PORT KLANG (WESTPORT), MALAYSIA (MYPKG)"
+
+
+def test_bilingual_gloss_label_from_xlsx_docx_pairs():
+    """'Shipper (Principal or Seller) (发货人):' — the CJK gloss must not
+    leak into the value."""
+    text = (
+        "Shipper (Principal or Seller) (发货人): APRIL FINE PAPER TRADING\n"
+        "Consignee (收货人): AL GURG STATIONERY LLC\n"
+        "装货港 Load Port: SINGAPORE\n"
+    )
+    fields = extract_fields(text)
+    assert fields["shipper"] == "APRIL FINE PAPER TRADING"
+    assert fields["consignee"] == "AL GURG STATIONERY LLC"
+
+
+def test_inline_cjk_between_label_words():
+    """'Gross Weight毛重(KGS):' appears in 55 lines across the .txt pairs."""
+    fields = extract_fields("Gross Weight毛重(KGS): 67,311 KG\n")
+    assert fields["gross_weight_kg"] == "67,311 KG"
+
+
+def test_pdf_generator_newline_artifact_label():
+    """8 of the 20 readable PDFs carry 'TOTAL Gross Weightnn(KGS):'."""
+    fields = extract_fields("TOTAL Gross Weightnn(KGS): 23,702 KG\n")
+    assert fields["gross_weight_kg"] == "23,702 KG"
+
+
+def test_observed_real_aliases():
+    text = """Shipper (Principal or Seller): ASIA PACIFIC PAPERBOARD TRADING PTE LTD
+Notify Party/Intermediate Consignee: TOPKOPY MIDDLE EAST FZE
+No. of Containers or Packages: 15 x 20'GP
+Shipper/Exporter: IGNORED BECAUSE SHIPPER ALREADY SET
+"""
+    fields = extract_fields(text)
+    assert fields["shipper"] == "ASIA PACIFIC PAPERBOARD TRADING PTE LTD"
+    assert fields["notify_party"] == "TOPKOPY MIDDLE EAST FZE"
+    assert fields["container_count"] == "15 x 20'GP"
+
+
+def test_commercial_invoice_labels_do_not_populate_shipping_fields():
+    """email_501_BL.txt is a Commercial Invoice standing in for a BL. Its
+    'Seller:'/'Buyer:' lines must not be read as shipper/consignee, or
+    wrong_doc_type becomes undetectable in stage 4."""
+    text = """COMMERCIAL INVOICE
+Invoice No.: 5250078266
+Seller: APRIL FINE PAPER TRADING (MIDDLE EAST) FZE
+Buyer: KPP-ANTALIS (SINGAPORE) PTE. LTD.
+"""
+    fields = extract_fields(text)
+    assert all(value is None for value in fields.values())
+
+
+def test_possessive_label_is_not_read_as_the_field():
+    fields = extract_fields("Shipper's Reference: ABC-123\n")
+    assert fields["shipper"] is None
+
+
+def test_net_weight_is_not_gross_weight():
+    fields = extract_fields("Net Weight: 19,400 KG\n")
+    assert fields["gross_weight_kg"] is None

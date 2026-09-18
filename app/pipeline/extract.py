@@ -20,10 +20,20 @@ for the same field) — confirmed by manually tracing email_004:
 
 Also per the dataset README, expect: "Load Port" as another POL alias.
 
-Matching is on the *normalized* label (lowercased, punctuation flattened to
-spaces), and must be an exact whole-label match rather than a substring —
-short aliases like "pol"/"pod" would otherwise fire inside unrelated labels
-such as "Place of Delivery".
+Matching is by anchored label *prefix*: an alias must start the line and be
+followed by a separator, then the rest of the line is the value. Anchoring
+is what keeps short aliases like "pol"/"pod" from firing inside unrelated
+labels, and the prefix form is required because the real documents are not
+uniformly colon-delimited — the .txt/.xlsx pairs write
+"Load Port: SINGAPORE" while the PDF pairs write "Load Port BUATAN,
+INDONESIA" with a single space. Longest alias wins, so
+"Consignee (Non-Negotiable)" beats a bare "Consignee".
+
+Values are taken as the first line only. Shipper/consignee blocks in the
+PDF pairs run on for several address lines, and SI and BL wrap those
+addresses differently for the same party — comparing whole blocks would
+manufacture mismatches, while the identity line that actually carries the
+defect is always first.
 """
 
 from __future__ import annotations
@@ -39,12 +49,21 @@ class UnreadableDocument(Exception):
     garbled). Stage 4 turns this into review_reason='unreadable'."""
 
 
-# Known label synonyms seen across SI/BL documents. Lowercased, matched
-# against a normalized (lowercased, punctuation-stripped) line prefix.
-# Seed set from manually tracing email_004 + the dataset README.
+# Known label synonyms seen across SI/BL documents, listed canonical-first
+# within each field (see _ALIAS_INDEX on why order matters).
+#
+# Every alias marked "observed" was harvested from the real attachments in
+# data/attachments by scanning all 242 readable documents for labels the
+# alias set did not yet cover. The unmarked ones are defensive variants.
+#
+# Deliberately NOT aliased: "Place of Receipt" / "Place of Delivery" (inland
+# points, not the load/discharge ports — semantically different fields) and
+# "Net Weight" (not gross). None of the three occurs in this dataset, so
+# including them would add false-match risk with no recall to gain.
 FIELD_ALIASES: dict[str, list[str]] = {
     "shipper": [
-        "shipper",
+        "shipper (principal or seller)",  # observed: .txt, .xlsx
+        "shipper",  # observed: .txt, .pdf
         "shippers",
         "shipper name",
         "shipper exporter",
@@ -52,10 +71,9 @@ FIELD_ALIASES: dict[str, list[str]] = {
         "consignor",
     ],
     "consignee": [
-        "consignee",
-        "consignee (non-negotiable)",
-        "consignee non negotiable",
-        "to the order of",
+        "consignee (non-negotiable)",  # observed: .txt, .pdf
+        "to the order of",  # observed: .txt
+        "consignee",  # observed: .txt, .xlsx
         "to order of",
         "to order",
         "order of",
@@ -63,49 +81,54 @@ FIELD_ALIASES: dict[str, list[str]] = {
         "consignee name",
     ],
     "notify_party": [
-        "notify",
-        "notify party",
+        "notify party/intermediate consignee",  # observed: .txt
+        "notify party",  # observed: .txt, .pdf, .xlsx
+        "notify",  # observed: .txt
         "notify parties",
         "notify address",
         "party to notify",
         "also notify",
     ],
     "port_of_loading": [
-        "port of loading",
-        "port of loading (pol)",
+        "port of loading (pol)",  # observed: .txt
+        "port of loading",  # observed: .txt
+        "load port",  # observed: .txt, .pdf, .xlsx
         "pol",
-        "load port",
         "loading port",
         "port of load",
-        "place of receipt",
     ],
     "port_of_discharge": [
-        "port of discharge",
-        "port of discharge (pod)",
-        "pod",
+        "port of discharge (pod)",  # observed: .txt
+        "port of discharge",  # observed: .txt, .pdf
         "discharge port",
+        "pod",  # observed: .txt
         "port of unloading",
-        "place of delivery",
         "destination port",
     ],
     "container_count": [
-        "total containers",
-        "container count",
-        "containers",
-        "no of containers",
+        "no. of containers or packages",  # observed: .txt, .xlsx
+        "total containers",  # observed: .txt
+        "container count",  # observed: .txt, .pdf
         "number of containers",
+        "no of containers",
         "qty of containers",
         "container qty",
         "total container",
+        "containers",
     ],
     "gross_weight_kg": [
-        "gross wt (kgs)",
-        "gross wt kgs",
-        "gross weight (kg)",
-        "gross weight kg",
+        # Observed verbatim in 8 of the 20 readable PDFs as
+        # "TOTAL Gross Weightnn(KGS):" — the generator literalized an "\n\n"
+        # escape into the PDF text layer. Matched as written rather than by
+        # loosening the matcher, which would weaken every other alias.
+        "total gross weightnn (kgs)",
+        "total gross weight (kg)",  # observed: .pdf
+        "total gross wt (kgs)",  # observed: .pdf
+        "total gross weight",  # observed: .pdf
+        "gross weight (kg)",  # observed: .txt, .xlsx
+        "gross wt (kgs)",  # observed: .txt
         "gross weight",
         "gross wt",
-        "total gross weight",
         "gross weight kgs",
         "gross mass",
     ],
@@ -138,9 +161,18 @@ BLANK_MARKERS = {
     "xxxx",
 }
 
-# A label ends at the first colon, a tab, or a run of 2+ spaces (column
-# layouts in fixed-width text and PDF extractions).
-_SPLIT_RE = re.compile(r"^(?P<label>[^:\t]{1,60}?)\s*(?::|\t|\s{2,})\s*(?P<value>.*)$")
+# Separators allowed between a label and its value. An apostrophe is
+# deliberately absent so "Shipper's Reference" is not read as "Shipper".
+_SEPARATOR_CLASS = r"[\s:;,\-–—()\[\]]"
+# Everything between the end of a label and the start of its value, consumed
+# repeatedly in either form:
+#   - a whole parenthetical, which is how the xlsx+docx pairs carry their
+#     bilingual gloss: "Shipper (Principal or Seller) (发货人):"
+#   - a run of separator punctuation, including the closing bracket left over
+#     when an alias matched through "(POL" in "Port of Loading (POL):"
+# An opening bracket is deliberately excluded from the separator run so that
+# a parenthetical is always consumed whole by the first branch, never split.
+_CONSUMED_SEPARATORS = r"(?:\s*\([^)]*\)|[\s:;,.\-–—)\]]+)*"
 
 
 def normalize_label(label: str) -> str:
@@ -150,15 +182,50 @@ def normalize_label(label: str) -> str:
     return re.sub(r"\s+", " ", flattened).strip()
 
 
-# normalized alias -> (field, rank). Aliases are normalized with the same
-# function as document labels so both sides agree by construction. Rank is
-# the alias's position in its list: lists are written canonical-first, so a
-# document carrying both "Place of Receipt" and "Port of Loading" resolves
-# to the latter regardless of which appears first on the page.
+# normalized alias -> (field, rank). Rank is the alias's position in its
+# list: lists are canonical-first, so when one document uses two aliases of
+# the same field the better-ranked label wins regardless of page order.
 _ALIAS_INDEX: dict[str, tuple[str, int]] = {}
 for _field, _aliases in FIELD_ALIASES.items():
     for _rank, _alias in enumerate(_aliases):
         _ALIAS_INDEX[normalize_label(_alias)] = (_field, _rank)
+
+
+def _alias_pattern(normalized_alias: str) -> re.Pattern[str]:
+    """Anchored prefix matcher for one alias.
+
+    The alias's words are rejoined with a flexible punctuation separator so
+    one entry matches "Port of Loading (POL)", "PORT OF LOADING - POL" and
+    "port_of_loading" alike.
+    """
+    words = r"[^0-9A-Za-z]+".join(re.escape(word) for word in normalized_alias.split())
+    return re.compile(
+        rf"^\s*{words}(?={_SEPARATOR_CLASS}|$){_CONSUMED_SEPARATORS}(?P<value>.*)$",
+        re.IGNORECASE,
+    )
+
+
+# Longest alias first so "Consignee (Non-Negotiable)" wins over "Consignee";
+# ties broken by rank. Built once at import.
+_ALIAS_PATTERNS: list[tuple[re.Pattern[str], str, int]] = [
+    (_alias_pattern(alias), field, rank)
+    for alias, (field, rank) in sorted(
+        _ALIAS_INDEX.items(), key=lambda item: (-len(item[0]), item[1][1])
+    )
+]
+
+
+def match_label(line: str) -> tuple[str, int, str] | None:
+    """Match one line against the alias table.
+
+    Returns (field, alias_rank, value) or None. Value may be empty when the
+    label sits alone on its line.
+    """
+    for pattern, field, rank in _ALIAS_PATTERNS:
+        found = pattern.match(line)
+        if found:
+            return field, rank, found.group("value").strip()
+    return None
 
 
 def is_blank_value(value: str | None) -> bool:
@@ -176,10 +243,7 @@ def is_blank_value(value: str | None) -> bool:
 def _looks_like_label(line: str) -> bool:
     """Does this line start a new labelled field (rather than continue the
     previous value)? Used to stop multi-line value capture."""
-    match = _SPLIT_RE.match(line)
-    if not match:
-        return False
-    return normalize_label(match.group("label")) in _ALIAS_INDEX
+    return match_label(line) is not None
 
 
 def extract_fields(document_text: str) -> dict[str, str | None]:
@@ -195,31 +259,23 @@ def extract_fields(document_text: str) -> dict[str, str | None]:
 
     lines = document_text.splitlines()
     for index, line in enumerate(lines):
-        match = _SPLIT_RE.match(line)
-        if not match:
+        matched = match_label(line)
+        if matched is None:
             continue
+        field, rank, value = matched
 
-        entry = _ALIAS_INDEX.get(normalize_label(match.group("label")))
-        if entry is None:
-            continue
-        field, rank = entry
         # First occurrence wins (documents repeat labels in footers and
         # continuation pages) unless this label is a better-ranked alias.
         if field in best_rank and rank >= best_rank[field]:
             continue
 
-        value = match.group("value").strip()
-
-        # Block layout: "Consignee:" on its own line, value on the lines
-        # below. Gather continuation lines until the next known label or a
-        # blank line, capped so a runaway parse cannot swallow the document.
+        # Block layout: "Consignee:" alone on its line, value beneath it.
+        # Only the first continuation line is taken, matching the
+        # first-line rule used when the value is inline.
         if not value:
-            collected: list[str] = []
-            for following in lines[index + 1 : index + 5]:
-                if not following.strip() or _looks_like_label(following):
-                    break
-                collected.append(following.strip())
-            value = " ".join(collected).strip()
+            following = lines[index + 1].strip() if index + 1 < len(lines) else ""
+            if following and not _looks_like_label(following):
+                value = following
 
         best_rank[field] = rank
         fields[field] = None if is_blank_value(value) else value
@@ -280,9 +336,22 @@ _W_NS = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
 
 def _docx_text_of(element) -> str:
-    """Concatenated run text under one element (paragraph or cell)."""
-    parts = [node.text or "" for node in element.iter(f"{_W_NS}t")]
-    return re.sub(r"\s+", " ", "".join(parts)).strip()
+    """Text under one element (paragraph or cell), preserving line breaks.
+
+    <w:br/> inside a run is a real line break: the xlsx+docx pairs put a
+    party's name on the first line and its address on the following ones.
+    Concatenating runs blindly welds them together ("...TRADINGON BEHALF
+    OF..."), which both corrupts the name and defeats the first-line rule.
+    """
+    parts: list[str] = []
+    for node in element.iter():
+        if node.tag == f"{_W_NS}t":
+            parts.append(node.text or "")
+        elif node.tag in (f"{_W_NS}br", f"{_W_NS}cr"):
+            parts.append("\n")
+    lines = "".join(parts).split("\n")
+    cleaned = [re.sub(r"[^\S\n]+", " ", line).strip() for line in lines]
+    return "\n".join(line for line in cleaned if line)
 
 
 def _read_docx(path: Path) -> str:
@@ -329,7 +398,14 @@ def _read_docx(path: Path) -> str:
                 if (text := _docx_text_of(cell))
             ]
             if len(cells) >= 2:
-                lines.append(f"{cells[0]}: {' '.join(cells[1:])}")
+                # A label cell is single-line; a value cell may carry a
+                # party name plus address lines, which must stay on their
+                # own lines for the first-line rule to hold.
+                label = cells[0].splitlines()[0]
+                lines.append(f"{label}: {' '.join(cells[1:])}".split("\n", 1)[0])
+                remainder = "\n".join(cells[1:]).split("\n", 1)
+                if len(remainder) > 1:
+                    lines.append(remainder[1])
             elif cells:
                 lines.append(cells[0])
         elif element.tag == f"{_W_NS}p" and id(element) not in in_table:
@@ -355,7 +431,14 @@ def _read_xlsx(path: Path) -> str:
         for row in sheet.iter_rows(values_only=True):
             cells = [str(cell).strip() for cell in row if cell is not None and str(cell).strip()]
             if len(cells) >= 2:
-                lines.append(f"{cells[0]}: {' '.join(cells[1:])}")
+                # These sheets pack a party's name and address into one cell
+                # separated by "|", the same structure the docx pairs express
+                # with <w:br/>. Normalizing both to real newlines is what lets
+                # the first-line rule compare an xlsx SI against a docx BL.
+                value = " ".join(cells[1:]).replace("|", "\n")
+                value_lines = [part.strip() for part in value.split("\n") if part.strip()]
+                lines.append(f"{cells[0]}: {value_lines[0] if value_lines else ''}")
+                lines.extend(value_lines[1:])
             elif cells:
                 lines.append(cells[0])
     workbook.close()

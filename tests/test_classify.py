@@ -137,3 +137,64 @@ def test_empty_email_falls_back_without_crashing():
 def test_classify_tolerates_missing_keys():
     category, _ = classify_email({"email_id": "email_x"})
     assert category in set(Category)
+
+
+# --- regressions found by running all 520 real emails ----------------------
+
+
+def test_underscore_delimited_subject_still_matches():
+    """This inbox delimits subjects with "_". An underscore is a word
+    character, so "\\bsi needed\\b" does not match "SI NEEDED_" and these
+    emails were landing in BL_COMPARISON. Verbatim from email_008."""
+    category, confidence = classify_email(
+        email(
+            subject="RE_ SI NEEDED_ 5APH-26773 _ UAB NOVAKOPA _ PO_25_2186 _ MERSIN",
+            body="Hi Ooi\n\nPlease find Shipping instruction for 5APH-26773.",
+        )
+    )
+    assert category == Category.SI_REQUEST
+    assert confidence >= CONFIDENCE_FLOOR
+
+
+def test_rpa_marker_survives_underscore_flattening():
+    category, _ = classify_email(
+        email(subject="_RPA_ UPDATE SUMMARY 18/09", body="Automated run completed.")
+    )
+    assert category == Category.GENERAL
+
+
+def test_advertising_spam_is_not_general():
+    """Half the SPAM class is advertising, not phishing; these scored zero
+    on every category and fell through to GENERAL. From email_026/email_184."""
+    for subject in [
+        "Increase your shipping revenue with this ONE weird trick",
+        "Hot singles in your area want to connect",
+        "Exclusive offer: 90% OFF premium logistics software this week",
+        "Dear Valued Customer, update your account to avoid suspension",
+    ]:
+        category, _ = classify_email(
+            email(
+                subject=subject,
+                body=(
+                    "LIMITED TIME OFFER! Get 90% off the #1 logistics automation "
+                    "suite. Trusted by 10,000+ companies. Buy now before this "
+                    "deal expires!"
+                ),
+            )
+        )
+        assert category == Category.SPAM, subject
+
+
+def test_berthing_report_body_outweighs_a_submit_si_subject():
+    """11 real emails pair a 'Submit SI' subject with a berthing-report
+    body. The body is what they actually are. From email_252."""
+    category, _ = classify_email(
+        email(
+            subject="_Reminder_Paper - Submit SI & AED_14-01-2026",
+            body=(
+                "Dear Team,\n\nKindly find the daily berthing report attached. "
+                "Vessel MMSS 2507 V.257087E berthed on schedule.\n\nBest,\nOperations"
+            ),
+        )
+    )
+    assert category == Category.GENERAL

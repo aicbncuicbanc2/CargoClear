@@ -85,8 +85,20 @@ SIGNALS: dict[Category, list[tuple[str, float]]] = {
     ],
     Category.GENERAL: [
         (r"\bupdate\s+summary\b", 3.0),
-        (r"\bberthing\s+report\b", 3.0),
-        (r"_rpa_", 3.0),
+        # Decisive wherever it appears, subject or body: a berthing report is
+        # always a routine operational notice. 11 emails in this inbox pair a
+        # "Reminder ... Submit SI & AED" subject with a berthing-report body,
+        # and the subject alone would drag them into SI_REQUEST.
+        (r"\bberthing\s+report\b", 5.0),
+        # Written "_RPA_" in the source; _text_of has flattened the
+        # underscores to spaces by the time this runs.
+        (r"\brpa\b", 3.0),
+        (r"\bdear\s+colleagues\b", 2.0),
+        (r"\boffice\s+resumes\b", 2.5),
+        (r"\blist\s+of\s+outstanding\b", 2.0),
+        (r"\btime\s+off\s+request\b", 2.5),
+        (r"\bapproval\s+required\b", 1.5),
+        (r"\bnew\s+year\b", 1.2),
         (r"\bsla\b", 2.0),
         (r"\breminder\b", 1.2),
         (r"\bpublic\s+holiday\b", 2.5),
@@ -116,6 +128,20 @@ SIGNALS: dict[Category, list[tuple[str, float]]] = {
         (r"\bwire\s+transfer\s+urgent\b", 2.5),
         (r"\bgift\s+card\b", 2.5),
         (r"\bunsubscribe\b", 0.8),
+        # Advertising spam: the phishing patterns above missed this whole
+        # half of the SPAM class, which was landing in GENERAL with no
+        # signal at all ("Hot singles...", "...ONE weird trick").
+        (r"\blimited\s+time\s+offer\b", 3.0),
+        (r"\bexclusive\s+offer\b", 3.0),
+        (r"\bweird\s+trick\b", 3.5),
+        (r"\bhot\s+singles\b", 3.5),
+        (r"\bdear\s+valued\s+customer\b", 3.0),
+        (r"\b\d{1,3}\s*%\s*off\b", 3.0),
+        (r"\bbuy\s+now\b", 2.5),
+        (r"\bdeal\s+expires\b", 2.5),
+        (r"\bact\s+now\b", 2.0),
+        (r"\btrusted\s+by\s+[\d,]+\+?\s*(?:companies|customers|clients)\b", 2.5),
+        (r"\brisk[-\s]free\b", 2.0),
     ],
 }
 
@@ -130,11 +156,16 @@ def _text_of(email: dict, *keys: str) -> str:
 
     The dataset's loader.py hands back plain dicts; the exact key spelling
     ("body" vs "text", "sender" vs "from") is not worth coupling to.
+
+    Underscores are flattened to spaces because this inbox uses "_" as a
+    subject delimiter — "RE_ SI NEEDED_ 5APH-26773 _ UAB NOVAKOPA". An
+    underscore is a word character to the regex engine, so "\\bsi needed\\b"
+    does not match "SI NEEDED_" and the email lands in the wrong category.
     """
     for key in keys:
         value = email.get(key)
         if isinstance(value, str) and value.strip():
-            return value
+            return value.replace("_", " ")
     return ""
 
 

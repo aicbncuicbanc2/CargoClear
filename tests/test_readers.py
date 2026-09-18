@@ -113,6 +113,44 @@ def test_docx_table_cell_text_is_not_emitted_twice(tmp_path):
     assert text.strip() == "Shipper: APRIL FAR EAST (M) SDN BHD"
 
 
+def test_docx_line_breaks_are_preserved(tmp_path):
+    """A <w:br/> inside a run is a real line break. Concatenating runs welds
+    the party name onto its address ('...TRADINGON BEHALF OF...'), which
+    both corrupts the name and defeats the first-line rule. Taken from
+    email_055_BL.docx."""
+    cell = (
+        "<w:p><w:r>"
+        "<w:t>APRIL FINE PAPER TRADING</w:t><w:br/>"
+        "<w:t>ON BEHALF OF VITAL SOLUTIONS PTE LTD</w:t><w:br/>"
+        "<w:t>77 ROBINSON ROAD, #21-01</w:t>"
+        "</w:r></w:p>"
+    )
+    label = _paragraph("Shipper (Principal or Seller) (发货人)")
+    path = tmp_path / "email_909_BL.docx"
+    _write_docx(path, f"<w:tbl><w:tr><w:tc>{label}</w:tc><w:tc>{cell}</w:tc></w:tr></w:tbl>")
+
+    text = read_document(path)
+    assert "TRADINGON" not in text
+    assert extract_from_file(path)["shipper"] == "APRIL FINE PAPER TRADING"
+
+
+def test_xlsx_pipe_separated_cell_splits_into_lines(tmp_path):
+    """The .xlsx pairs pack name and address into one cell separated by '|',
+    the same structure the .docx pairs express with <w:br/>. Both must
+    reduce to the same first line or the pair compares unequal."""
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(
+        ["Shipper/Exporter", "APRIL FINE PAPER TRADING | ON BEHALF OF VITAL SOLUTIONS"]
+    )
+    path = tmp_path / "email_910_SI.xlsx"
+    workbook.save(path)
+
+    assert extract_from_file(path)["shipper"] == "APRIL FINE PAPER TRADING"
+
+
 def test_docx_missing_document_xml_is_unreadable(tmp_path):
     import zipfile
 

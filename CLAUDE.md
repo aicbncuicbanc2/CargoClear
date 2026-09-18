@@ -41,9 +41,11 @@ These exact enum values are already encoded in `app/pipeline/models.py`
 
 ## Dataset
 
-520 emails in `data/inbox/` (gitignored — not committed), ~109 SI+BL
-attachment pairs in `data/attachments/`: ~78% plain `.txt`, ~22% real binary
-(`pdf+pdf`, `xlsx+docx`, `xlsx+xlsx`). `data/loader.py` ships an `Inbox`
+520 emails in `data/inbox/` (gitignored — not committed) and 250 files in
+`data/attachments/`. Measured: 126 emails carry attachments, 124 of them a
+2-file SI+BL pair. By pair shape: 94 `txt+txt`, 13 `pdf+pdf`, 8
+`xlsx+docx`, 7 `xlsx+xlsx`, 2 `txt+pdf`, 2 SI-only. By file: 192 `.txt`,
+28 `.pdf`, 22 `.xlsx`, 8 `.docx`. `data/loader.py` ships an `Inbox`
 class — see its docstring for the local-file vs HTTP-server interface.
 `docs/manual-trace-email_004.md` is a hand-worked example (real mismatch on
 `consignee` + `notify_party`, with the label synonyms observed).
@@ -85,53 +87,98 @@ app/
   gemini_client.py   Gemini API client wrapper (needs GEMINI_API_KEY)
   pipeline/
     models.py         Category/Status/ReviewReason enums + EmailResult (submission shape)
-    classify.py        Stage 1 — NotImplementedError stub, has subject-signal notes
-    extract.py          Stage 2 — NotImplementedError stub, FIELD_ALIASES seeded from email_004
+    classify.py        Stage 1 — DONE. Weighted signal rules + Gemini fallback
+    extract.py          Stage 2 — DONE. Alias matching + txt/pdf/docx/xlsx readers
     compare.py           Stage 3 — NotImplementedError stub
     escalate.py           Stage 4 — NotImplementedError stub, review_reason triggers documented
     dataset.py           Wraps data/loader.py's Inbox interface
   templates/          Jinja2 (base/inbox/email_detail/review), Pico.css via CDN
+tests/              pytest suite (69 tests); test_dataset_coverage.py runs
+                    against the real bundle and skips when data/ is absent
 docs/
   manual-trace-email_004.md   Worked example
 Dockerfile           For Cloud Run deploy
 .env.example         Copy to .env, fill in GEMINI_API_KEY
 ```
 
-## Status as of handoff (Fri 18 Sep, done in a Cowork cloud session)
+## Status as of Fri 18 Sep (verified in a Claude Code session on this machine)
 
-- [x] Repo scaffolded, FastAPI app boots, all routes smoke-tested (200s)
-- [x] Dependencies install cleanly into `.venv` (isolated venv, not system Python)
-- [x] Dataset extracted into `data/` (gitignored), `loader.py` present
+The previous handoff's status list was written by a cloud session that had
+no shell here, and three of its checkmarks did not hold on this machine:
+`.venv` did not exist, `data/` held nothing but `.gitkeep`, and the repo was
+not a git repo at all. Everything below was checked by running it.
+
+- [x] Repo scaffolded, FastAPI app boots, all 4 routes smoke-tested (200s)
+- [x] `.venv` created here and dependencies installed (isolated venv, not
+      system Python). Recreate with:
+      `python -m venv .venv && ./.venv/Scripts/python.exe -m pip install -r requirements.txt`
+- [x] Dataset extracted into `data/` (gitignored): 520 emails, 250
+      attachment files, `loader.py`, `sample_submission.json`, README
 - [x] Schema aligned exactly to `sample_submission.json` / dataset README
 - [x] One email (`email_004`) manually traced end-to-end by hand
-- [ ] **git init / commit / push not yet done** — that cloud session had no
-      shell on this machine, so files were written here via file transfer
-      only. Do this first:
-      ```bash
-      cd ~/projects/CargoClear
-      git init
-      git add .
-      git commit -m "Scaffold FastAPI app + pipeline structure, align schema with dataset"
-      git branch -M main
-      git remote add origin https://github.com/aicbncuicbanc2/CargoClear.git
-      git push -u origin main
-      ```
-- [ ] `.env` not created yet — copy `.env.example` to `.env` and fill in `GEMINI_API_KEY`
-- [ ] Classify stage (Sat)
-- [ ] Extract stage — plain-text alias matching first, Gemini fallback for pdf/docx/xlsx (Sat)
+- [x] git init / commit / push **done** — remote already had GitHub's
+      auto-created "Initial commit" with a stub README, so the scaffold was
+      rebased onto it rather than force-pushed. `main` tracks
+      `origin/main` at https://github.com/aicbncuicbanc2/CargoClear
+- [x] `.env` created from `.env.example` and confirmed gitignored —
+      **`GEMINI_API_KEY` is still blank, the user fills it in**
+- [x] Classify stage (Sat) — deterministic weighted signals + Gemini
+      fallback below `CONFIDENCE_FLOOR`
+- [x] Extract stage (Sat) — anchored alias matching over txt/pdf/docx/xlsx
 - [ ] Compare stage (Sun)
 - [ ] Escalate/review-reason logic (Sun)
 - [ ] Run against self-eval endpoint, iterate (Sun)
-- [ ] Report UI wired to real pipeline output (Mon)
+- [ ] Report UI wired to real pipeline output (Mon) — `app/main.py` still
+      renders empty placeholder context, not pipeline output
 - [ ] Deploy to Cloud Run, get live URL (Mon)
 - [ ] README finalized with setup instructions (Mon)
 - [ ] Demo video, slide deck, final smoke test, submit via Google Form (Tue, before noon)
 
+### Measured state of stages 1-2 (against the real dataset, not fixtures)
+
+- Extraction: all 7 fields recovered from **every** non-edge-case document
+  (168 txt, 20 pdf, 22 xlsx, 8 docx). The only documents that do not fully
+  extract are the 20 purpose-built edge cases, which are *meant* to fail.
+- 64 of 119 comparable SI/BL pairs agree on all 7 fields; the rest differ on
+  1-3 fields, which is the shape real seeded defects should have.
+- Classification: category mix lands within ~2.3 points of the README's
+  stated distribution on all five categories, and 96% of the inbox is
+  decided by rules alone — only ~4% falls below `CONFIDENCE_FLOOR` and
+  would consult Gemini.
+- `pytest tests -q` = 69 passing. `tests/test_dataset_coverage.py` asserts
+  the figures above and auto-skips when `data/` is absent.
+
+### Environment gotcha specific to this machine
+
+`python-docx` **cannot be imported here** — Application Control policy
+blocks lxml's compiled `_elementpath` DLL. The `.docx` reader therefore uses
+only the standard library (a .docx is a zip of XML). Do not "fix" this by
+reintroducing python-docx; it would work on Cloud Run but break every local
+test run.
+
+### Things stage 3/4 will need to handle (found while building stage 2)
+
+- `extract_fields` returns `None` both for a field whose label is absent and
+  for one that is present but blank. If `missing_value` needs to be told
+  apart from the other review reasons, that distinction has to be recovered
+  in stage 4 or surfaced from stage 2.
+- Values are **not** normalized: `243588` vs `243,588` and
+  `MOMBASA, KENYA (KEMBA)` vs `MOMBASA, KENYA` are formatting differences,
+  not defects. Numeric/whitespace/punctuation normalization belongs in
+  `compare.py`, or it will manufacture false mismatches.
+- The edge-case groups are contiguous and identifiable: 501-505
+  wrong_doc_type (BL is a Commercial Invoice etc.), 506-510
+  missing_attachment (0 or 1 attachment), 511-515 unreadable (scanned or
+  truncated PDFs), 516-520 missing_value (`N/A`, `TBA`, blank).
+- `Seller:` / `Buyer:` are deliberately **not** aliased to shipper/consignee.
+  Aliasing them would populate fields from the Commercial Invoices in
+  501-505 and make `wrong_doc_type` undetectable.
+
 ## Day-by-day (from the original build plan)
 
-- **Fri 18 (today)**: repo + dataset + scaffold + manual trace — see Status above.
+- **Fri 18**: repo + dataset + scaffold + manual trace — done, see Status above.
 - **Sat 19**: Classify (all 5 categories) + Extract (7 fields, plain-text +
-  alias handling). Workshop 1, 12–1pm.
+  alias handling) — done early, on Fri 18. Workshop 1, 12–1pm.
 - **Sun 20**: Compare (deterministic diff) + submission JSON output +
   escalation logic. Run against self-eval, iterate on accuracy.
 - **Mon 21**: Report UI (inbox overview / comparison view / review queue),
