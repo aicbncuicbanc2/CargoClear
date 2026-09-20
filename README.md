@@ -31,6 +31,29 @@ reason, rather than guessed at or failed silently.
 Compared fields: `shipper`, `consignee`, `notify_party`, `port_of_loading`,
 `port_of_discharge`, `container_count`, `gross_weight_kg`.
 
+### Showing its working
+
+An ops user has to be able to argue with a verdict, not just receive it, so
+each screen reports why it said what it said:
+
+- **Stage 1** shows its confidence and the signals it keyed on
+  (*"subject says 'draft BL'"*, *"carries both an SI and a BL attachment"*).
+- **Stage 2** shows the header each document actually used for a field. This
+  is where "align by meaning, not header text" becomes visible: across the
+  dataset, **451 field pairs were matched through two different labels** —
+  the SI's `Port of Loading` against the BL's `Load Port`, and so on.
+- **Stage 3** flags the two cases where a settled verdict still deserves a
+  second look: a match that only held *after* normalization (5 in this
+  dataset, all thousands separators), and a difference confined to
+  punctuation or spacing (none here — every seeded defect in this dataset is
+  substantive, and a one-container difference is deliberately *not* softened
+  into a near miss just because it moves few characters).
+
+All of this is display-only. It annotates verdicts that are already decided
+and cannot move an email between `OK`, `MISMATCH` and `NEEDS_REVIEW` — a
+property the test suite asserts directly, because it is what keeps
+`submission.json` stable.
+
 A blank or unreadable field is never reported as a mismatch — it becomes
 `NEEDS_REVIEW` with `has_defect=false`. Claiming a defect you can't
 substantiate is worse than admitting you couldn't read the document.
@@ -89,7 +112,7 @@ dataset server (`http://localhost:8080`).
 ## Running it
 
 ```bash
-# Test suite — 135 tests
+# Test suite — 158 tests
 pytest tests -q
 
 # Full pipeline over all 520 emails; writes submission.json (~45s)
@@ -109,7 +132,11 @@ automatically when `data/` is absent, so the suite passes on a fresh clone.
 | `/` | Inbox overview — every email with category, status and attachment count, filterable |
 | `/email/{id}` | Per-email comparison: the 7 fields side by side, SI vs BL, with the source excerpt from each document as evidence |
 | `/review` | Human review queue — the escalated emails, each tagged with its review reason and evidence |
+| `/submission.json` | The graded artifact, downloadable, built from the same cached run the screens render |
 | `/health` | Health probe (also `/healthz` locally — see the deploy note) |
+
+The inbox is searchable by email id, subject or sender, and combines with the
+category and status filters.
 
 The inbox runs the pipeline once and caches the result in memory, so the first
 request is slow and every later one is fast.
@@ -167,7 +194,7 @@ app/
     pipeline.py      Runner — writes submission.json
     dataset.py       Wraps the provided loader.py Inbox interface
   templates/         Jinja2, Pico.css via CDN
-tests/               pytest suite (135 tests)
+tests/               pytest suite (158 tests)
 docs/
   manual-trace-email_004.md   One email traced end-to-end by hand
 Dockerfile

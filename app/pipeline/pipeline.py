@@ -23,8 +23,8 @@ from pathlib import Path
 from app.config import settings
 from app.pipeline import compare as compare_stage
 from app.pipeline import escalate as escalate_stage
-from app.pipeline.classify import classify_email
-from app.pipeline.extract import UnreadableDocument, extract_fields, read_document
+from app.pipeline.classify import classify_email, matched_signals
+from app.pipeline.extract import UnreadableDocument, extract_with_labels, read_document
 from app.pipeline.models import (
     COMPARISON_FIELDS,
     Category,
@@ -78,17 +78,21 @@ class ProcessedEmail:
 EVIDENCE_LINES = 8
 
 
-def _read(source: Path, attachment: str) -> tuple[str | None, dict[str, str], str]:
+def _read(
+    source: Path, attachment: str
+) -> tuple[str | None, dict[str, str], dict[str, str], str]:
     """Read one attachment.
 
-    Returns (text, fields, error). text is None and error is populated if
-    the document could not be read at all.
+    Returns (text, fields, labels, error). text is None and error is
+    populated if the document could not be read at all. `labels` records the
+    header this document used for each field it carries, for the UI.
     """
     try:
         text = read_document(Path(source) / attachment)
     except UnreadableDocument as exc:
-        return None, {}, str(exc)
-    return text, extract_fields(text), ""
+        return None, {}, {}, str(exc)
+    fields, labels = extract_with_labels(text)
+    return text, fields, labels, ""
 
 
 def _excerpt(text: str | None, lines: int = EVIDENCE_LINES) -> str:
@@ -163,7 +167,7 @@ def _build_evidence(
 def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> ProcessedEmail:
     """Run one email through all four stages."""
     email_id = email.get("email_id", "")
-    category, _confidence = classify_email(email)
+    category, confidence = classify_email(email)
 
     result = EmailResult(category=category)
     report = EmailReport(
@@ -171,6 +175,8 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> ProcessedEmail:
         subject=email.get("subject", ""),
         sender=email.get("from") or email.get("sender", ""),
         result=result,
+        confidence=confidence,
+        signals=matched_signals(email, category),
     )
 
     attachment_count = len(email.get("attachments") or [])
@@ -194,12 +200,14 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> ProcessedEmail:
     bl_text: str | None = None
     si_fields: dict[str, str] = {}
     bl_fields: dict[str, str] = {}
+    si_labels: dict[str, str] = {}
+    bl_labels: dict[str, str] = {}
     si_error = bl_error = ""
 
     if si_path:
-        si_text, si_fields, si_error = _read(source, si_path)
+        si_text, si_fields, si_labels, si_error = _read(source, si_path)
     if bl_path:
-        bl_text, bl_fields, bl_error = _read(source, bl_path)
+        bl_text, bl_fields, bl_labels, bl_error = _read(source, bl_path)
 
     bl_is_bl = bool(bl_text) and escalate_stage.looks_like_bill_of_lading(
         bl_text, bl_fields
@@ -215,6 +223,10 @@ def process_email(email: dict, source: Path = DEFAULT_SOURCE) -> ProcessedEmail:
     )
 
     comparison = compare_stage.compare_fields(si_fields, bl_fields)
+    for item in comparison:
+        item.si_label = si_labels.get(item.field)
+        item.bl_label = bl_labels.get(item.field)
+    compare_stage.annotate(comparison)
     report.fields = comparison
 
     defects = compare_stage.defect_fields(comparison) if reason is None else []

@@ -76,10 +76,24 @@ class EmailResult(BaseModel):
 
 
 class FieldValue(BaseModel):
+    """One field's SI/BL values and verdict.
+
+    Everything below `match` is display-only. It annotates a verdict that has
+    already been decided; none of it feeds `EmailResult`, so it cannot move
+    an email between OK, MISMATCH and NEEDS_REVIEW.
+    """
+
     field: str
     si_value: Optional[str] = None
     bl_value: Optional[str] = None
     match: Optional[bool] = None  # None when a value is missing/unreadable
+    # The header each document actually used, e.g. "Port of Loading" in the
+    # SI against "Load Port" in the BL.
+    si_label: Optional[str] = None
+    bl_label: Optional[str] = None
+    # Why this verdict deserves a second look: a match that only held after
+    # normalization, or a difference small enough to be a typo.
+    note: Optional[str] = None
 
 
 class EmailReport(BaseModel):
@@ -92,3 +106,7 @@ class EmailReport(BaseModel):
     result: EmailResult
     fields: list[FieldValue] = []
     evidence: Optional[str] = None
+    # Stage 1's own account of itself: how sure the classifier was, and the
+    # signals that got it there. Display-only, like the FieldValue extras.
+    confidence: float = 0.0
+    signals: list[str] = []

@@ -31,6 +31,14 @@
     .stat-review { color: #8a6116; }
     .filters { margin-bottom: 0.5rem; }
 
+    /* Why the classifier said what it said — collapsed by default so the
+       verdict stays the headline, expandable when it is challenged. */
+    details.classification { margin: 0.5rem 0 1rem; font-size: 0.9rem; }
+    details.classification summary { cursor: pointer; color: #555; }
+    ul.signals { margin: 0.3rem 0 0 0.5rem; }
+    /* A caveat on a settled verdict, not a verdict of its own. */
+    small.note { font-style: italic; }
+
     pre.evidence {
       white-space: pre-wrap; word-break: break-word;
       font-size: 0.82rem; padding: 0.6rem 0.8rem; margin: 0;
@@ -43,6 +51,7 @@
     <ul>
       <li><a href="/">Inbox</a></li>
       <li><a href="/review">Review queue</a></li>
+      <li><a href="/submission.json">submission.json</a></li>
     </ul>
   </nav>
   <main class="container">

@@ -16,7 +16,7 @@ from pathlib import Path
 from threading import Lock
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -106,6 +106,7 @@ def inbox_overview(
     request: Request,
     category: str = Query("", description="Filter by category"),
     status: str = Query("", description="Filter by status"),
+    q: str = Query("", description="Search email id, subject or sender"),
 ):
     """Screen 1: table of every processed email + stats header."""
     reports = get_reports()
@@ -116,6 +117,17 @@ def inbox_overview(
         rows = [row for row in rows if row["category"] == category]
     if status:
         rows = [row for row in rows if row["status"] == status]
+    if q:
+        # 520 rows is a lot to scroll to reach one email. Substring over the
+        # three fields a user actually knows: the id, the subject, the sender.
+        needle = q.strip().casefold()
+        rows = [
+            row
+            for row in rows
+            if needle in row["email_id"].casefold()
+            or needle in row["subject"].casefold()
+            or needle in row["sender"].casefold()
+        ]
 
     return templates.TemplateResponse(
         request,
@@ -127,6 +139,7 @@ def inbox_overview(
             "statuses": [s.value for s in Status],
             "selected_category": category,
             "selected_status": status,
+            "query": q,
         },
     )
 
@@ -160,6 +173,8 @@ def email_detail(request: Request, email_id: str):
             "evidence": report.evidence,
             "si_excerpt": processed.si_excerpt,
             "bl_excerpt": processed.bl_excerpt,
+            "confidence": report.confidence,
+            "signals": report.signals,
         },
     )
 
@@ -176,6 +191,25 @@ def review_queue(request: Request):
     escalations.sort(key=lambda row: (row["review_reason"] or "", row["email_id"]))
     return templates.TemplateResponse(
         request, "review.html", {"escalations": escalations}
+    )
+
+
+@app.get("/submission.json")
+def submission():
+    """The graded artifact itself, served from the same cached run the UI shows.
+
+    Built from the cache rather than re-running the pipeline, so what you
+    download is exactly the verdict set rendered on the other screens — not a
+    second run that could differ on the ~4% of emails Gemini decides.
+    """
+    reports = get_reports()
+    payload = {
+        email_id: processed.result.to_submission()
+        for email_id, processed in reports.items()
+    }
+    return JSONResponse(
+        payload,
+        headers={"Content-Disposition": 'attachment; filename="submission.json"'},
     )
 
 

@@ -214,6 +214,40 @@ def score_categories(email: dict) -> dict[Category, float]:
     return scores
 
 
+def matched_signals(email: dict, category: Category) -> list[str]:
+    """The signals that put this email in `category`, in plain words.
+
+    The classifier is a scoring function, which makes it fast and testable
+    but opaque to the ops user who has to trust the label. This reports what
+    it actually keyed on, so a wrong classification can be argued with
+    instead of merely disbelieved.
+    """
+    subject = _text_of(email, "subject", "title")
+    body = _text_of(email, "body", "text", "content")
+
+    hits: list[tuple[float, str]] = []
+    for pattern, weight in _COMPILED.get(category, []):
+        found = pattern.search(subject)
+        if found:
+            hits.append((weight * SUBJECT_WEIGHT, f"subject says {found.group(0)!r}"))
+        found = pattern.search(body)
+        if found:
+            hits.append((weight * BODY_WEIGHT, f"body says {found.group(0)!r}"))
+
+    if category is Category.BL_COMPARISON:
+        names = " ".join(_attachment_names(email)).lower()
+        has_si = bool(re.search(r"(^|[^a-z])si([^a-z]|$)|shipping.?instruction", names))
+        has_bl = bool(re.search(r"(^|[^a-z])b_?l([^a-z]|$)|bill.?of.?lading", names))
+        if has_si and has_bl:
+            hits.append((6.0, "carries both an SI and a BL attachment"))
+        elif has_bl:
+            hits.append((2.0, "carries a BL attachment"))
+
+    # Heaviest first: the reader wants the deciding signal, not a transcript.
+    hits.sort(key=lambda item: item[0], reverse=True)
+    return [text for _weight, text in hits]
+
+
 def classify_email(email: dict) -> tuple[Category, float]:
     """Return (category, confidence in 0..1).
 

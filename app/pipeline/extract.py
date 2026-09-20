@@ -215,17 +215,41 @@ _ALIAS_PATTERNS: list[tuple[re.Pattern[str], str, int]] = [
 ]
 
 
+def match_label_detail(line: str) -> tuple[str, int, str, str] | None:
+    """Match one line against the alias table, keeping the raw label.
+
+    Returns (field, alias_rank, value, label_as_written) or None. The label
+    is the text the document itself uses, which the UI shows so a reviewer
+    can see *which* header was aligned to a field: "Load Port" in the BL
+    matched against "Port of Loading" in the SI is the alias table doing the
+    work the brief asks for, and it is worth showing rather than asserting.
+    """
+    for pattern, field, rank in _ALIAS_PATTERNS:
+        found = pattern.match(line)
+        if found:
+            label = line[: found.start("value")].strip()
+            # Drop the separator run the pattern consumed, so the label reads
+            # as a header ("Port of Loading") not as raw source ("Port of
+            # Loading (POL):").
+            label = label.rstrip(":;,.-–—)]	 ")
+            # The separator run consumes a closing bracket, which can leave
+            # the label unbalanced ("Load Port (POL"). Cut the dangling
+            # parenthetical rather than showing broken punctuation; a
+            # balanced one ("Shipper (Principal or Seller)") is kept whole.
+            if label.count("(") > label.count(")"):
+                label = label[: label.rfind("(")].strip()
+            return field, rank, found.group("value").strip(), label
+    return None
+
+
 def match_label(line: str) -> tuple[str, int, str] | None:
     """Match one line against the alias table.
 
     Returns (field, alias_rank, value) or None. Value may be empty when the
     label sits alone on its line.
     """
-    for pattern, field, rank in _ALIAS_PATTERNS:
-        found = pattern.match(line)
-        if found:
-            return field, rank, found.group("value").strip()
-    return None
+    detail = match_label_detail(line)
+    return detail[:3] if detail else None
 
 
 def is_blank_value(value: str | None) -> bool:
@@ -285,15 +309,28 @@ def extract_fields(document_text: str) -> dict[str, str]:
     The first occurrence of a field wins — shipping documents repeat labels
     in footers and continuation pages.
     """
+    return extract_with_labels(document_text)[0]
+
+
+def extract_with_labels(document_text: str) -> tuple[dict[str, str], dict[str, str]]:
+    """extract_fields(), plus the label each field was matched on.
+
+    Returns (fields, labels). `labels` maps a field to the header this
+    document actually used for it, and only ever contains fields that were
+    found. It exists for the UI: showing the two documents' own wording side
+    by side is what makes "aligned by meaning, not header text" visible
+    rather than merely claimed.
+    """
     fields: dict[str, str] = {}
+    labels: dict[str, str] = {}
     best_rank: dict[str, int] = {}
 
     lines = document_text.splitlines()
     for index, line in enumerate(lines):
-        matched = match_label(line)
+        matched = match_label_detail(line)
         if matched is None:
             continue
-        field, rank, value = matched
+        field, rank, value, label = matched
 
         # First occurrence wins (documents repeat labels in footers and
         # continuation pages) unless this label is a better-ranked alias.
@@ -309,11 +346,12 @@ def extract_fields(document_text: str) -> dict[str, str]:
                 value = following
 
         best_rank[field] = rank
+        labels[field] = label
         # "" records "label found, value blank" — distinct from the key
         # being absent entirely. See this function's docstring.
         fields[field] = "" if is_blank_value(value) else value
 
-    return fields
+    return fields, labels
 
 
 # --- format readers -------------------------------------------------------

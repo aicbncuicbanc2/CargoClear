@@ -19,6 +19,21 @@
   {% if row.review_reason %}<span class="badge badge-review">{{ row.review_reason }}</span>{% endif %}
 </p>
 
+<details class="classification">
+  <summary>
+    Classified <strong>{{ row.category }}</strong>
+    — confidence {{ '%.0f' | format(confidence * 100) }}%
+  </summary>
+  {% if signals %}
+  <p><small>The classifier keyed on:</small></p>
+  <ul class="signals">
+    {% for signal in signals %}<li><small>{{ signal }}</small></li>{% endfor %}
+  </ul>
+  {% else %}
+  <p><small>No rule signals fired; this label came from the model fallback.</small></p>
+  {% endif %}
+</details>
+
 {% if not is_comparison %}
 <article class="banner banner-na">
   <strong>Not a document comparison request.</strong>
@@ -54,12 +69,19 @@
     {% for field in fields %}
     <tr class="{% if field.match is false %}row-mismatch{% elif field.match is true %}row-match{% else %}row-review{% endif %}">
       <td><strong>{{ field.field }}</strong></td>
-      <td>{% if field.si_value %}{{ field.si_value }}{% elif field.si_value == '' %}<em class="muted">(blank)</em>{% else %}<em class="muted">(not stated)</em>{% endif %}</td>
-      <td>{% if field.bl_value %}{{ field.bl_value }}{% elif field.bl_value == '' %}<em class="muted">(blank)</em>{% else %}<em class="muted">(not stated)</em>{% endif %}</td>
+      <td>
+        {% if field.si_value %}{{ field.si_value }}{% elif field.si_value == '' %}<em class="muted">(blank)</em>{% else %}<em class="muted">(not stated)</em>{% endif %}
+        {% if field.si_label %}<br><small class="muted">labelled &ldquo;{{ field.si_label }}&rdquo;</small>{% endif %}
+      </td>
+      <td>
+        {% if field.bl_value %}{{ field.bl_value }}{% elif field.bl_value == '' %}<em class="muted">(blank)</em>{% else %}<em class="muted">(not stated)</em>{% endif %}
+        {% if field.bl_label %}<br><small class="muted">labelled &ldquo;{{ field.bl_label }}&rdquo;</small>{% endif %}
+      </td>
       <td>
         {% if field.match is false %}<span class="badge badge-mismatch">mismatch</span>
         {% elif field.match is true %}<span class="badge badge-match">match</span>
         {% else %}<span class="badge badge-review">not comparable</span>{% endif %}
+        {% if field.note %}<br><small class="muted note">{{ field.note }}</small>{% endif %}
       </td>
     </tr>
     {% endfor %}

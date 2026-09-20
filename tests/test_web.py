@@ -283,3 +283,64 @@ def test_reports_are_computed_once(monkeypatch):
 
     REAL_GET_REPORTS(refresh=True)
     assert calls["n"] == 2, "refresh=True did not recompute"
+
+
+# --- the submission artifact ---------------------------------------------
+
+
+def test_submission_route_serves_every_email(client):
+    response = client.get("/submission.json")
+    assert response.status_code == 200
+
+    payload = response.json()
+    assert set(payload) == set(FIXTURE)
+
+
+def test_submission_route_matches_the_pipeline_shape(client):
+    """What is downloadable must be exactly what would be submitted."""
+    payload = client.get("/submission.json").json()
+    expected = {
+        email_id: processed.result.to_submission()
+        for email_id, processed in FIXTURE.items()
+    }
+    assert payload == expected
+
+
+def test_submission_route_downloads_as_a_file(client):
+    response = client.get("/submission.json")
+    assert "attachment" in response.headers["content-disposition"]
+    assert "submission.json" in response.headers["content-disposition"]
+
+
+# --- inbox search ---------------------------------------------------------
+
+
+def test_search_matches_an_email_id(client):
+    response = client.get("/", params={"q": "email_004"})
+    assert response.status_code == 200
+    assert "email_004" in response.text
+    assert "email_001" not in response.text
+
+
+def test_search_is_case_insensitive(client):
+    assert "email_004" in client.get("/", params={"q": "EMAIL_004"}).text
+
+
+def test_search_matches_the_subject(client):
+    assert "email_004" in client.get("/", params={"q": "Subject for email_004"}).text
+
+
+def test_search_with_no_match_shows_the_empty_state(client):
+    response = client.get("/", params={"q": "no-such-email-anywhere"})
+    assert response.status_code == 200
+    assert "No emails match this filter." in response.text
+
+
+def test_search_combines_with_the_category_filter(client):
+    response = client.get(
+        "/", params={"q": "email", "category": Category.BL_COMPARISON.value}
+    )
+    assert response.status_code == 200
+    for email_id, processed in FIXTURE.items():
+        if processed.result.category is not Category.BL_COMPARISON:
+            assert f"/email/{email_id}" not in response.text
