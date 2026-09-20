@@ -141,11 +141,19 @@ not a git repo at all. Everything below was checked by running it.
       per request
 - [x] Gemini key verified live (see the model-id note below)
 - [x] Dockerfile fixed and verified by simulating the container layout
-- [x] Deployed to Cloud Run (Mon). **Live URL:
+- [x] Deployed to Cloud Run. **Live URL:
       https://shipdoc-verify-a5povl5zsa-as.a.run.app**
+      (Cloud Run also answers on the longer form
+      `https://shipdoc-verify-142988436999.asia-southeast1.run.app`.)
       Project `cargoclear-509012`, region `asia-southeast1`, service
       `shipdoc-verify`, public (`--allow-unauthenticated`).
-- [ ] README finalized with setup instructions (Mon)
+      Latest revision `shipdoc-verify-00005-m4w`, deployed Sun 20 Sep with
+      the explainability work below.
+- [x] Explainability pass (Sun 20): classifier confidence + the signals it
+      fired on, the header each document used per field, borderline
+      annotations, `/submission.json`, and inbox search. All display-only —
+      verified byte-identical submission output before and after.
+- [x] README finalized with setup instructions (Sun 20, early)
 - [ ] Demo video, slide deck, final smoke test, submit via Google Form (Tue, before noon)
 
 ### Measured state of the pipeline (against the real dataset, not fixtures)
@@ -166,7 +174,7 @@ not a git repo at all. Everything below was checked by running it.
   `consignee` + `notify_party`.
 - Value normalization prevents 5 real false defects (all thousands
   separators, e.g. `243588` vs `243,588`).
-- `pytest tests -q` = 135 passing. `tests/test_dataset_coverage.py` asserts
+- `pytest tests -q` = 158 passing. `tests/test_dataset_coverage.py` asserts
   the figures above and auto-skips when `data/` is absent.
 
 **No scoring has been attempted.** There is no legitimate self-eval endpoint
@@ -218,9 +226,11 @@ copies `data/`, sets `DATASET_SOURCE=/app/data`, runs as a non-root user,
 and leaves `GEMINI_API_KEY` unset so the secret is supplied at run time. A
 `.dockerignore` keeps `.env` and `.venv` out of the image.
 
-**Still unverified:** the actual image build (pip install on
-`python:3.12-slim`, the non-root `USER` switch). Run the dry-run before
-deploying:
+**Now verified, by Cloud Build rather than locally:** the 20 Sep deploy
+built this exact Dockerfile from source, so the pip install on
+`python:3.12-slim` and the non-root `USER` switch both work. Docker is still
+not installed here, so the local dry-run below has never been run — but it is
+no longer the only evidence that the image is sound.
 
     docker build -t shipdoc-verify .
     docker run -p 8080:8080 -e GEMINI_API_KEY=... shipdoc-verify
@@ -264,6 +274,11 @@ Redeploy with (from **PowerShell**, not Git Bash — see trap 2):
    production. `/healthz` is kept for local runs and other hosts.
 
 ### Verified live after deploy
+
+Re-verified after the 20 Sep deploy: `/health` 200, `/` 200, `/review` 200,
+`/email/email_004` 200, `/submission.json` 200 returning all 520 entries and
+matching the locally generated `submission.json` exactly. Search and the
+confidence panel render live. Earlier deploy notes:
 
 `/health` 200, `/` 200, `/review` 200, `/email/email_004` 200. Stats header
 reads 520 / 220 / 48 / 20, the review queue holds 20 entries at 5 per reason,
